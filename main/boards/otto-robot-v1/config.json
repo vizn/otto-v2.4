@@ -1,0 +1,15 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "otto-robot-v1",
+            "sdkconfig_append": [
+                "CONFIG_HTTPD_WS_SUPPORT=y",
+                "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y",
+                "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y",
+                "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH=\"certs\"",
+                "CONFIG_OTA_URL=\"https://xiaozhi.zillionairetravel.com/xiaozhi/ota/\""
+            ]
+        }
+    ]
+}
