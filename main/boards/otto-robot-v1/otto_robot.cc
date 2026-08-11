@@ -10,6 +10,8 @@
 #include "config.h"
 #include "display/lcd_display.h"
 #include "mcp_server.h"
+#include "miot_client.h"
+#include "music_player.h"
 #include "otto_emoji_display.h"
 #include "power_manager.h"
 #include "system_reset.h"
@@ -28,6 +30,8 @@ private:
     WebSocketControlServer* ws_control_server_;
     HardwareConfig hw_config_;
     AudioCodec* audio_codec_;
+    MiotClient* miot_client_;
+    MusicPlayer* music_player_;
 
     void InitializePowerManager() {
         power_manager_ = new PowerManager(hw_config_.power_charge_detect_pin,
@@ -116,6 +120,26 @@ private:
         InitializeWebSocketControlServer();
     }
 
+    void SetNetworkEventCallback(NetworkEventCallback callback) override {
+        WifiBoard::SetNetworkEventCallback([this, callback](NetworkEvent event, const std::string& data) {
+            callback(event, data);
+            if (event == NetworkEvent::Connected && miot_client_ == nullptr) {
+                StartMiotClient();
+            }
+        });
+    }
+
+    void StartMiotClient() {
+        music_player_ = new MusicPlayer();
+        music_player_->SetAudioCodec(GetAudioCodec());
+        music_player_->Start();
+
+        miot_client_ = new MiotClient();
+        miot_client_->SetMusicPlayer(music_player_);
+        miot_client_->Start();
+        ESP_LOGI(TAG, "MIOT client started");
+    }
+
     void InitializeAudioCodec() {
         if (hw_config_.audio_use_simplex) {
             audio_codec_ = new NoAudioCodecSimplex(
@@ -133,7 +157,7 @@ private:
 
 public:
     OttoRobot()
-        : boot_button_(BOOT_BUTTON_GPIO), audio_codec_(nullptr) {
+        : boot_button_(BOOT_BUTTON_GPIO), audio_codec_(nullptr), miot_client_(nullptr), music_player_(nullptr) {
         // 旧版 otto-robot 硬件（无摄像头、24pin ST7789、INMP441 + MAX98357）
         hw_config_ = OTTO_V1_CONFIG;
 

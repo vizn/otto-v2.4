@@ -8,7 +8,8 @@
                 "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y",
                 "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y",
                 "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH=\"certs\"",
-                "CONFIG_OTA_URL=\"https://xiaozhi.zillionairetravel.com/xiaozhi/ota/\""
+                "CONFIG_OTA_URL=\"https://xiaozhi.zillionairetravel.com/xiaozhi/ota/\"",
+                "CONFIG_OTA_URL_LAN=\"http://192.168.199.162:8003/xiaozhi/ota/\""
             ]
         }
     ]

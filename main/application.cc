@@ -592,6 +592,10 @@ void Application::InitializeProtocol() {
                     glyphs.clear();
                 }
                 ESP_LOGI(TAG, ">> %s", text->valuestring);
+                recent_user_texts_.push_back(text->valuestring);
+                if (recent_user_texts_.size() > 4) {
+                    recent_user_texts_.pop_front();
+                }
                 Schedule([display, message = std::string(text->valuestring),
                           glyphs = std::move(glyphs), bpp]() {
                     display->AddTextGlyphs(glyphs, bpp);
@@ -1136,6 +1140,14 @@ bool Application::CanEnterSleepMode() {
 
 void Application::RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback) {
     mcp_broadcast_callback_ = std::move(callback);
+}
+
+std::string Application::GetLastUserText() const {
+    std::string combined;
+    for (const auto& seg : recent_user_texts_) {
+        combined += seg;
+    }
+    return combined;
 }
 
 void Application::SendMcpMessage(const std::string& payload) {

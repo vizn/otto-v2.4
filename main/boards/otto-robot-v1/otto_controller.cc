@@ -4,6 +4,7 @@
 
 #include <cJSON.h>
 #include <esp_log.h>
+#include <esp_random.h>
 
 #include <cstdlib> 
 #include <cstring>
@@ -65,7 +66,10 @@ private:
         ACTION_SHOWCASE = 28,   // 展示动作
         ACTION_HOME = 17,
         ACTION_SERVO_SEQUENCE = 18,  // 舵机序列（自编程）
-        ACTION_WHIRLWIND_LEG = 19    // 旋风腿
+        ACTION_WHIRLWIND_LEG = 19,   // 旋风腿
+        ACTION_FLOWER_DANCE = 30,    // 花花舞
+        ACTION_BEAT_KEEPING = 31,    // 打节拍
+        ACTION_SAFE_GROOVE = 32      // 安全律动舞
     };
 
     static void ActionTask(void* arg) {
@@ -337,6 +341,15 @@ private:
                         case ACTION_SHOWCASE:
                             controller->otto_.Showcase();
                             break;
+                        case ACTION_FLOWER_DANCE:
+                            controller->otto_.FlowerDance();
+                            break;
+                        case ACTION_BEAT_KEEPING:
+                            controller->otto_.BeatKeeping();
+                            break;
+                        case ACTION_SAFE_GROOVE:
+                            controller->otto_.SafeGroove();
+                            break;
                         case ACTION_UPDOWN:
                             controller->otto_.UpDown(params.steps, params.speed, params.amount);
                             break;
@@ -536,7 +549,7 @@ public:
                            "基础动作：walk(行走，需steps/speed/direction/arm_swing)、turn(转身，需steps/speed/direction/arm_swing)、jump(跳跃，需steps/speed)、"
                            "swing(摇摆，需steps/speed/amount)、moonwalk(太空步，需steps/speed/direction/amount)、bend(弯曲，需steps/speed/direction)、"
                            "shake_leg(摇腿，需steps/speed/direction)、updown(上下运动，需steps/speed/amount)、whirlwind_leg(旋风腿，需steps/speed/amount)；"
-                           "固定动作：sit(坐下)、showcase(展示动作)、home(复位)；"
+                           "固定动作：dance(随机舞蹈，自动跳多段安全律动舞，适合用户要求跳舞/边跳舞边放音乐时使用)、safe_groove(安全律动舞，低幅度不会摔倒)、sit(坐下)、showcase(展示动作)、home(复位)；"
                            "手部动作(需手部舵机)：hands_up(举手，需speed/direction)、hands_down(放手，需speed/direction)、hand_wave(挥手，需direction)、"
                            "windmill(大风车，需steps/speed/amount)、takeoff(起飞，需steps/speed/amount)、fitness(健身，需steps/speed/amount)、"
                            "greeting(打招呼，需direction/steps)、shy(害羞，需direction/steps)、radio_calisthenics(广播体操)、magic_circle(爱的魔力转圈圈)",
@@ -567,9 +580,13 @@ public:
                                } else if (action == "jump") {
                                    QueueAction(ACTION_JUMP, steps, speed, 0, 0);
                                    return true;
-                               } else if (action == "swing") {
-                                   QueueAction(ACTION_SWING, steps, speed, 0, amount);
-                                   return true;
+                                } else if (action == "swing") {
+                                    // 幅度过大容易摔倒，限制最大安全幅度
+                                    if (amount > 40) {
+                                        amount = 40;
+                                    }
+                                    QueueAction(ACTION_SWING, steps, speed, 0, amount);
+                                    return true;
                                } else if (action == "moonwalk") {
                                    QueueAction(ACTION_MOONWALK, steps, speed, direction, amount);
                                    return true;
@@ -586,8 +603,14 @@ public:
                                    QueueAction(ACTION_WHIRLWIND_LEG, steps, speed, 0, amount);
                                    return true;
                                }
-                               // 固定动作
-                               else if (action == "sit") {
+                                // 固定动作
+                                else if (action == "dance") {
+                                    QueueRandomDance();
+                                    return true;
+                                } else if (action == "safe_groove") {
+                                    QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
+                                    return true;
+                                } else if (action == "sit") {
                                    QueueAction(ACTION_SIT, 1, 0, 0, 0);
                                    return true;
                                } else if (action == "showcase") {
@@ -659,7 +682,7 @@ public:
                                    QueueAction(ACTION_MAGIC_CIRCLE, 1, 0, 0, 0);
                                    return true;
                                } else {
-                                   return "错误：无效的动作名称。可用动作：walk, turn, jump, swing, moonwalk, bend, shake_leg, updown, whirlwind_leg, sit, showcase, home, hands_up, hands_down, hand_wave, windmill, takeoff, fitness, greeting, shy, radio_calisthenics, magic_circle";
+                                   return "错误：无效的动作名称。可用动作：walk, turn, jump, swing, moonwalk, bend, shake_leg, updown, whirlwind_leg, dance, safe_groove, sit, showcase, home, hands_up, hands_down, hand_wave, windmill, takeoff, fitness, greeting, shy, radio_calisthenics, magic_circle";
                                }
                            });
 
@@ -842,6 +865,18 @@ public:
         }
         vQueueDelete(action_queue_);
     }
+
+    void QueueFlowerDance() { QueueAction(ACTION_FLOWER_DANCE, 1, 0, 0, 0); }
+    void QueueBeatKeeping() { QueueAction(ACTION_BEAT_KEEPING, 1, 0, 0, 0); }
+
+    // 随机舞蹈：连续跳多段安全律动舞，配合音乐播放更持久。
+    // 只使用低幅度动作，避免摔倒。
+    void QueueRandomDance() {
+        const int dance_count = has_hands_ ? 3 : 2;
+        for (int i = 0; i < dance_count; i++) {
+            QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
+        }
+    }
 };
 
 static OttoController* g_otto_controller = nullptr;
@@ -850,5 +885,27 @@ void InitializeOttoController(const HardwareConfig& hw_config) {
     if (g_otto_controller == nullptr) {
         g_otto_controller = new OttoController(hw_config);
         ESP_LOGI(TAG, "Otto控制器已初始化并注册MCP工具");
+    }
+}
+
+bool OttoControllerAvailable() {
+    return g_otto_controller != nullptr;
+}
+
+void OttoControllerQueueFlowerDance() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->QueueFlowerDance();
+    }
+}
+
+void OttoControllerQueueBeatKeeping() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->QueueBeatKeeping();
+    }
+}
+
+void OttoControllerQueueRandomDance() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->QueueRandomDance();
     }
 }

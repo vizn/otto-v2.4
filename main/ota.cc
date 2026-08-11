@@ -22,7 +22,72 @@
 #include <sstream>
 #include <algorithm>
 
+#include <netdb.h>
+#include <arpa/inet.h>
+
 #define TAG "Ota"
+
+namespace {
+std::string ExtractHost(const std::string& url) {
+    size_t start = url.find("://");
+    if (start == std::string::npos) {
+        return "";
+    }
+    start += 3;
+    size_t end = url.find_first_of("/:", start);
+    if (end == std::string::npos) {
+        end = url.size();
+    }
+    return url.substr(start, end - start);
+}
+
+bool IsPrivateIpv4(const std::string& ip) {
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip.c_str(), &addr) != 1) {
+        return false;
+    }
+    uint32_t v = ntohl(addr.s_addr);
+    uint8_t a = (v >> 24) & 0xFF;
+    uint8_t b = (v >> 16) & 0xFF;
+    if (a == 10 || a == 127) {
+        return true;
+    }
+    if (a == 172 && b >= 16 && b <= 31) {
+        return true;
+    }
+    if (a == 192 && b == 168) {
+        return true;
+    }
+    if (a == 100 && b >= 64 && b <= 127) {
+        return true;
+    }
+    return false;
+}
+
+bool ResolvesToPrivateIpv4(const std::string& host) {
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    if (getaddrinfo(host.c_str(), nullptr, &hints, &res) != 0) {
+        return false;
+    }
+    bool is_private = false;
+    for (struct addrinfo* ai = res; ai != nullptr; ai = ai->ai_next) {
+        if (ai->ai_family != AF_INET) {
+            continue;
+        }
+        char ip_str[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &reinterpret_cast<struct sockaddr_in*>(ai->ai_addr)->sin_addr, ip_str, sizeof(ip_str));
+        if (IsPrivateIpv4(ip_str)) {
+            is_private = true;
+            break;
+        }
+    }
+    freeaddrinfo(res);
+    return is_private;
+}
+}  // namespace
 
 
 Ota::Ota() {
@@ -52,6 +117,19 @@ std::string Ota::GetCheckVersionUrl() {
     return url;
 }
 
+std::string Ota::GetLanOtaUrl() {
+#ifdef CONFIG_OTA_URL_LAN
+    Settings settings("wifi", false);
+    std::string url = settings.GetString("ota_url_lan");
+    if (url.empty()) {
+        url = CONFIG_OTA_URL_LAN;
+    }
+    return url;
+#else
+    return "";
+#endif
+}
+
 std::unique_ptr<Http> Ota::SetupHttp() {
     auto& board = Board::GetInstance();
     auto network = board.GetNetwork();
@@ -75,20 +153,50 @@ std::unique_ptr<Http> Ota::SetupHttp() {
  * Specification: https://ccnphfhqs21z.feishu.cn/wiki/FjW6wZmisimNBBkov6OcmfvknVd
  */
 esp_err_t Ota::CheckVersion() {
-    auto& board = Board::GetInstance();
     auto app_desc = esp_app_get_description();
 
     // Check if there is a new firmware version available
     current_version_ = app_desc->version;
     ESP_LOGI(TAG, "Current version: %s", current_version_.c_str());
 
+    // Prefer the intranet OTA server when it is configured on a private network
+    // address and reachable; intranet downloads are much faster.
+    std::string lan_url = GetLanOtaUrl();
+    if (!lan_url.empty()) {
+        std::string host = ExtractHost(lan_url);
+        if (host.empty() || !ResolvesToPrivateIpv4(host)) {
+            ESP_LOGW(TAG, "Intranet OTA URL does not point to a private network address, ignored: %s", lan_url.c_str());
+        } else {
+            ESP_LOGI(TAG, "Detected intranet OTA server (%s), trying it first", lan_url.c_str());
+            esp_err_t err = DoCheckVersion(lan_url, true);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "Version checked via intranet OTA server (preferred)");
+                last_checked_url_ = lan_url;
+                return ESP_OK;
+            }
+            ESP_LOGW(TAG, "Intranet OTA server unavailable (0x%x), falling back to default server", err);
+        }
+    }
+
     std::string url = GetCheckVersionUrl();
+    esp_err_t err = DoCheckVersion(url, false);
+    if (err == ESP_OK) {
+        last_checked_url_ = url;
+    }
+    return err;
+}
+
+esp_err_t Ota::DoCheckVersion(const std::string& url, bool short_timeout) {
+    auto& board = Board::GetInstance();
     if (url.length() < 10) {
         ESP_LOGE(TAG, "Check version URL is not properly set");
         return ESP_ERR_INVALID_ARG;
     }
 
     auto http = SetupHttp();
+    if (short_timeout) {
+        http->SetTimeout(3000);
+    }
 
     std::string data = board.GetSystemInfoJson();
     std::string method = data.length() > 0 ? "POST" : "GET";
@@ -461,7 +569,7 @@ esp_err_t Ota::Activate() {
         return ESP_FAIL;
     }
 
-    std::string url = GetCheckVersionUrl();
+    std::string url = last_checked_url_.empty() ? GetCheckVersionUrl() : last_checked_url_;
     if (url.back() != '/') {
         url += "/activate";
     } else {

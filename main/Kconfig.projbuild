@@ -6,6 +6,15 @@ config OTA_URL
     help
         The application will access this URL to check for new firmwares and server address.
 
+config OTA_URL_LAN
+    string "Intranet OTA URL"
+    default ""
+    help
+        Optional intranet OTA server. When set to an address that resolves to a
+        private network IP (e.g. http://192.168.x.x:8000/xiaozhi/ota/) and is
+        reachable, the application will prefer it for firmware checks and upgrades
+        because intranet downloads are faster. Falls back to OTA_URL otherwise.
+
 choice
     prompt "Flash Assets"
     default FLASH_DEFAULT_ASSETS if !USE_EMOTE_MESSAGE_STYLE

@@ -91,6 +91,9 @@ public:
     void RadioCalisthenics();  // 广播体操
     void MagicCircle();  // 爱的魔力转圈圈
     void Showcase();  // 展示动作（串联多个动作）
+    void FlowerDance();  // 花花舞（配合音乐节拍）
+    void BeatKeeping();  // 打节拍
+    void SafeGroove();   // 安全律动舞（低幅度，不易摔倒）
 
     // -- Servo limiter
     void EnableServoLimit(int speed_limit_degree_per_sec = SERVO_LIMIT_DEFAULT);

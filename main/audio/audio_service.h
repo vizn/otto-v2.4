@@ -137,6 +137,10 @@ public:
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
 
+    // 供外部播放源（如本地音乐播放器）标记输出活动，
+    // 避免空闲掉电定时器误关 I2S 输出。
+    void NotifyOutputActivity() { last_output_time_ = std::chrono::steady_clock::now(); }
+
 private:
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;

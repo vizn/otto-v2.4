@@ -53,6 +53,9 @@ private:
     bool IsNewVersionAvailable(const std::string& currentVersion, const std::string& newVersion);
     std::string GetActivationPayload();
     std::unique_ptr<Http> SetupHttp();
+    std::string GetLanOtaUrl();
+    esp_err_t DoCheckVersion(const std::string& url, bool short_timeout);
+    std::string last_checked_url_;
 };
 
 #endif // _OTA_H

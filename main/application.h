@@ -115,6 +115,14 @@ public:
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+
+    /**
+     * Get the most recent user speech text (from stt messages).
+     * Combines a sliding window of recent stt segments so that an utterance
+     * split across multiple stt messages (e.g. "边跳舞" + "电放音乐") can be
+     * matched by boards for intent detection.
+     */
+    std::string GetLastUserText() const;
     
     /**
      * Reset protocol resources (thread-safe)
@@ -136,6 +144,7 @@ private:
     ListeningMode listening_mode_ = kListeningModeAutoStop;
     AecMode aec_mode_ = kAecOff;
     std::string last_error_message_;
+    std::deque<std::string> recent_user_texts_;  // 最近几句 STT 文本（滑动窗口）
     AudioService audio_service_;
     std::unique_ptr<Ota> ota_;
 

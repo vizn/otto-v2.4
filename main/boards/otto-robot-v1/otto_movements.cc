@@ -870,17 +870,17 @@ void Otto::RadioCalisthenics() {
     double phase_diff1[SERVO_COUNT] = {0, 0, 0, 0, DEG2RAD(90), DEG2RAD(-90)};
     Execute2(A1, C1, period, phase_diff1, steps);
 
-    int C2[SERVO_COUNT] = {90, 90, 115, 65, 90, 90};
-    int A2[SERVO_COUNT] = {0, 0, 25, 25, 0, 0};
+    int C2[SERVO_COUNT] = {90, 90, 100, 80, 90, 90};
+    int A2[SERVO_COUNT] = {0, 0, 12, 12, 0, 0};
     double phase_diff2[SERVO_COUNT] = {0, 0, DEG2RAD(90), DEG2RAD(-90), 0, 0};
     Execute2(A2, C2, period, phase_diff2, steps);
     
-    int C3[SERVO_COUNT] = {90, 90, 130, 130, 90, 90};
+    int C3[SERVO_COUNT] = {90, 90, 100, 100, 90, 90};
     int A3[SERVO_COUNT] = {0, 0, 0, 0, 20, 0};
     double phase_diff3[SERVO_COUNT] = {0, 0, 0, 0, 0, 0};
     Execute2(A3, C3, period, phase_diff3, steps);
 
-    int C4[SERVO_COUNT] = {90, 90, 50, 50, 90, 90};
+    int C4[SERVO_COUNT] = {90, 90, 80, 80, 90, 90};
     int A4[SERVO_COUNT] = {0, 0, 0, 0, 0, 20};
     double phase_diff4[SERVO_COUNT] = {0, 0, 0, 0, 0, 0};
     Execute2(A4, C4, period, phase_diff4, steps);
@@ -910,7 +910,7 @@ void Otto::Showcase() {
     }
 
     // 1. 往前走3步
-    Walk(3, 1000, FORWARD, 50);
+    Walk(3, 1000, FORWARD, 25);
     vTaskDelay(pdMS_TO_TICKS(500));
 
     // 2. 挥挥手
@@ -926,27 +926,158 @@ void Otto::Showcase() {
     }
 
     // 4. 太空步
-    Moonwalker(3, 900, 25, LEFT);
+    Moonwalker(3, 900, 20, LEFT);
     vTaskDelay(pdMS_TO_TICKS(500));
 
     // 5. 摇摆
-    Swing(3, 1000, 30);
+    Swing(3, 1000, 20);
     vTaskDelay(pdMS_TO_TICKS(500));
 
     // 6. 起飞
     if (has_hands_) {
-        Takeoff(5, 300, 40);
+        Takeoff(5, 300, 25);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
     // 7. 健身
     if (has_hands_) {
-        Fitness(5, 1000, 25);
+        Fitness(5, 1000, 20);
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
     // 8. 往后走3步
-    Walk(3, 1000, BACKWARD, 50);
+    Walk(3, 1000, BACKWARD, 25);
+}
+
+//---------------------------------------------------------
+//-- 花花舞: 配合《花园种花》等歌曲的编排舞蹈
+//---------------------------------------------------------
+void Otto::FlowerDance() {
+    if (GetRestState() == true) {
+        SetRestState(false);
+    }
+
+    const int period = 900;   // 节拍周期
+    const float steps = 4.0;  // 每个动作节拍数
+
+    // 1. 左右摇摆 (轻快律动)
+    Swing(4, 800, 15);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 2. 双手摇摆 + 左右脚交替
+    if (has_hands_) {
+        int A[SERVO_COUNT] = {12, 12, 12, 12, 40, 40};
+        int O[SERVO_COUNT] = {90, 90, 95, 85, 110, 70};
+        double phase[SERVO_COUNT] = {0, 0, DEG2RAD(90), DEG2RAD(-90), DEG2RAD(90), DEG2RAD(-90)};
+        Execute2(A, O, period, phase, steps);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    // 3. 太空步
+    Moonwalker(3, 900, 20, LEFT);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 4. 跳跃
+    Jump(2, 1600);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 5. 转圈
+    AscendingTurn(2, 900, 12);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 6. 上下蹲起律动
+    UpDown(4, 800, 12);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 7. 挥手致意
+    if (has_hands_) {
+        HandWave(LEFT);
+        vTaskDelay(pdMS_TO_TICKS(300));
+        HandWave(RIGHT);
+        vTaskDelay(pdMS_TO_TICKS(300));
+    }
+
+    // 8. 回到站立
+    Home(true);
+}
+
+//---------------------------------------------------------
+//-- 打节拍: 配合音乐节奏上下律动
+//---------------------------------------------------------
+void Otto::BeatKeeping() {
+    if (GetRestState() == true) {
+        SetRestState(false);
+    }
+
+    const int period = 600;   // 较快的节拍
+    const float steps = 8.0;
+
+    // 1. 身体上下律动
+    UpDown(8, period, 12);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 2. 双手拍击律动
+    if (has_hands_) {
+        int A[SERVO_COUNT] = {0, 0, 0, 0, 30, 30};
+        int O[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
+        double phase[SERVO_COUNT] = {0, 0, 0, 0, DEG2RAD(90), DEG2RAD(-90)};
+        Execute2(A, O, period, phase, steps);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    // 3. 双脚交替点地（安全）
+    {
+        int A[SERVO_COUNT] = {0, 0, 12, 12, 0, 0};
+        int O[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
+        double phase[SERVO_COUNT] = {0, 0, DEG2RAD(90), DEG2RAD(-90), 0, 0};
+        Execute2(A, O, period, phase, steps);
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+
+    // 4. 摇头晃身
+    Swing(8, 700, 15);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    // 5. 回到站立
+    Home(true);
+}
+
+//---------------------------------------------------------
+//-- 安全律动舞: 低幅度、低风险动作，重心始终稳定
+//---------------------------------------------------------
+void Otto::SafeGroove() {
+    if (GetRestState() == true) {
+        SetRestState(false);
+    }
+
+    // 1. 双脚小幅度交替点地（振幅12，中心90°，安全）
+    {
+        int A[SERVO_COUNT] = {0, 0, 12, 12, 0, 0};
+        int O[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
+        double phase[SERVO_COUNT] = {0, 0, DEG2RAD(90), DEG2RAD(-90), 0, 0};
+        Execute2(A, O, 600, phase, 6.0);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+
+    // 2. 双腿小幅度交替摆动（振幅12，中心90°）
+    {
+        int A[SERVO_COUNT] = {12, 12, 0, 0, 0, 0};
+        int O[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
+        double phase[SERVO_COUNT] = {0, 0, 0, 0, 0, 0};
+        Execute2(A, O, 600, phase, 6.0);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+
+    // 3. 身体上下小幅度律动（幅度12）
+    UpDown(4, 700, 12);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // 4. 轻柔摇摆（幅度15，安全范围）
+    Swing(4, 800, 15);
+    vTaskDelay(pdMS_TO_TICKS(150));
+
+    // 5. 回到站立
+    Home(true);
 }
 
 void Otto::EnableServoLimit(int diff_limit) {
