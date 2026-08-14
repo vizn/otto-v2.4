@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "board.h"
+#include "display/display.h"
 #include "audio_codec.h"
 #include "http.h"
 #include "network_interface.h"
@@ -113,12 +114,14 @@ void MusicPlayer::Run() {
             stop_requested_ = true;
             playing_ = false;
             paused_ = false;
+            NotifyStopped();
         } else if (cmd.type == CommandType::kPause) {
             paused_ = true;
         } else if (cmd.type == CommandType::kResume) {
             paused_ = false;
         } else if (cmd.type == CommandType::kShowMessage) {
             ESP_LOGI(TAG, "Message: %.120s", cmd.payload);
+            ShowMessageOnScreen(cmd.payload);
         }
     }
     vTaskDelete(nullptr);
@@ -272,6 +275,7 @@ void MusicPlayer::PlayStream(const std::string& keyword) {
                         break;
                     case CommandType::kShowMessage:
                         ESP_LOGI(TAG, "Message: %.120s", cmd.payload);
+                        ShowMessageOnScreen(cmd.payload);
                         break;
                     case CommandType::kPlay:
                         // 新歌曲命令：记录关键词，停止当前流后重新开始
@@ -455,6 +459,25 @@ void MusicPlayer::PlayStream(const std::string& keyword) {
     }
 
     ESP_LOGI(TAG, "Playback finished");
+    NotifyStopped();
+}
+
+void MusicPlayer::NotifyStopped() {
+    if (on_stopped_ != nullptr) {
+        on_stopped_();
+    }
+}
+
+void MusicPlayer::ShowMessageOnScreen(const char* text) {
+    auto& app = Application::GetInstance();
+    std::string message = text != nullptr ? text : "";
+    app.Schedule([message]() {
+        ESP_LOGI(TAG, "ShowMessageOnScreen executing, message=[%s]", message.c_str());
+        auto* display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->SetChatMessage("system", message.c_str());
+        }
+    });
 }
 
 std::string MusicPlayer::UrlEncode(const std::string& input) {

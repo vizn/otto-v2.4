@@ -48,6 +48,11 @@ void MiotClient::Stop() {
     ESP_LOGI(TAG, "MIOT client stopped");
 }
 
+void MiotClient::RequestReconnect() {
+    reconnect_requested_.store(true);
+    ESP_LOGI(TAG, "Reconnect requested");
+}
+
 void MiotClient::TaskEntry(void* arg) {
     auto* client = static_cast<MiotClient*>(arg);
     client->Run();
@@ -119,6 +124,10 @@ void MiotClient::ConnectAndServe() {
     // 心跳循环：发送 JSON ping -> 服务器返回 JSON pong
     TickType_t last_heartbeat = xTaskGetTickCount();
     while (!stop_requested_) {
+        if (reconnect_requested_.exchange(false)) {
+            ESP_LOGI(TAG, "Reconnect requested, disconnecting");
+            break;
+        }
         TickType_t now = xTaskGetTickCount();
         if (now - last_heartbeat >= pdMS_TO_TICKS(kHeartbeatIntervalMs)) {
             ws->Send("{\"type\":\"ping\"}");
@@ -193,7 +202,7 @@ void MiotClient::HandleControlCommand(const cJSON* data) {
             if (ParseDanceWithMusic(keyword, play_keyword)) {
                 music_player_->PlayByKeyword(play_keyword);
                 ESP_LOGI(TAG, "「%s」触发随机音乐舞蹈，播放歌曲: %s", keyword, play_keyword.c_str());
-                OttoControllerQueueRandomDance();
+                OttoControllerQueueContinuousDance();
             } else {
                 music_player_->PlayByKeyword(keyword);
 
@@ -205,7 +214,7 @@ void MiotClient::HandleControlCommand(const cJSON* data) {
                     user_text.find("边跳边放") != std::string::npos ||
                     user_text.find("跳着") != std::string::npos) {
                     ESP_LOGI(TAG, "用户原话「%s」含跳舞意图，触发随机舞蹈", user_text.c_str());
-                    OttoControllerQueueRandomDance();
+                    OttoControllerQueueContinuousDance();
                     return;
                 }
 

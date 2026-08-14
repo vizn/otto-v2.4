@@ -710,6 +710,10 @@ void Application::StopListening() { xEventGroupSetBits(event_group_, MAIN_EVENT_
 void Application::HandleToggleChatEvent() {
     auto state = GetDeviceState();
 
+    // 用户主动开始对话（按键切换），先让板级组件释放独占资源（如停止本地音乐）。
+    // 放在各状态分支之前，确保无论当前处于 idle/listening/speaking 都能停音乐。
+    Board::GetInstance().OnUserInteract();
+
     if (state == kDeviceStateActivating) {
         SetDeviceState(kDeviceStateIdle);
         return;
@@ -849,6 +853,9 @@ void Application::HandleWakeWordDetectedEvent() {
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
     // Must run in the main task with the device in idle state
     audio_service_.EncodeWakeWord();
+
+    // 唤醒词命中即用户交互，先让板级组件释放独占资源（如停止本地音乐）
+    Board::GetInstance().OnUserInteract();
 
     // Always pass through the connecting state, even if the audio channel is
     // already opened. ContinueWakeWordInvoke() rejects any other state, so

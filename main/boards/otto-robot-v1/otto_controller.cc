@@ -28,6 +28,7 @@ private:
     QueueHandle_t action_queue_;
     bool has_hands_ = false;
     bool is_action_in_progress_ = false;
+    bool continuous_dance_ = false;
 
     struct OttoActionParams {
         int action_type;
@@ -80,6 +81,7 @@ private:
         while (true) {
             if (xQueueReceive(controller->action_queue_, &params, pdMS_TO_TICKS(1000)) == pdTRUE) {
                 ESP_LOGI(TAG, "执行动作: %d", params.action_type);
+                Otto::ClearStop();  // 新动作开始时清除停止标志
                 PowerManager::PauseBatteryUpdate();  // 动作开始时暂停电量更新
                 controller->is_action_in_progress_ = true;
                 if (params.action_type == ACTION_SERVO_SEQUENCE) {
@@ -417,8 +419,17 @@ private:
                             controller->otto_.Home(true);
                             break;
                     }
+                    // 连续舞蹈模式：音乐播放期间自动续跳下一段 SafeGroove。
+                    // 在归位判断之前入队，使下方 pending_actions>0，跳过归位避免“急停+再启动”
+                    if (controller->continuous_dance_ && !Otto::StopRequested()) {
+                        controller->QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
+                    }
                     if(params.action_type != ACTION_SIT){
                         if (params.action_type != ACTION_HOME && params.action_type != ACTION_SERVO_SEQUENCE) {
+                            // 停止请求已下达：清除标志，使下方归位动作能够正常执行
+                            if (Otto::StopRequested()) {
+                                Otto::ClearStop();
+                            }
                             UBaseType_t pending_actions =
                                 uxQueueMessagesWaiting(controller->action_queue_);
                             // 如果后面还有动作，先不归位，避免“动作末尾急停+马上再启动”
@@ -730,15 +741,7 @@ public:
 
         mcp_server.AddTool("self.otto.stop", "立即停止所有动作并复位", PropertyList(),
                            [this](const PropertyList& properties) -> ReturnValue {
-                               if (action_task_handle_ != nullptr) {
-                                   vTaskDelete(action_task_handle_);
-                                   action_task_handle_ = nullptr;
-                               }
-                               is_action_in_progress_ = false;
-                               PowerManager::ResumeBatteryUpdate();  // 停止动作时恢复电量更新
-                               xQueueReset(action_queue_);
-
-                               QueueAction(ACTION_HOME, 1, 1000, 1, 0);
+                               StopAll();
                                return true;
                            });
 
@@ -877,6 +880,25 @@ public:
             QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
         }
     }
+
+    // 连续舞蹈：跟随音乐持续跳 SafeGroove，直到 OttoControllerStopAll 被调用
+    //（音乐播放结束由 MusicPlayer 回调触发）。入队前清除停止标志，避免上次停止残留。
+    void QueueContinuousDance() {
+        ESP_LOGI(TAG, "连续舞蹈模式开启：跟随音乐持续律动");
+        Otto::ClearStop();
+        continuous_dance_ = true;
+        QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
+    }
+
+    // 立即停止当前动作与所有排队动作并归位。
+    // 通过设置 Otto 停止标志让当前动作内部循环提前退出，同时清空动作队列。
+    // ActionTask 会继续存活，当前动作退出后自动 Home 归位。
+    void StopAll() {
+        ESP_LOGI(TAG, "停止请求：打断当前动作并归位");
+        continuous_dance_ = false;
+        Otto::RequestStop();
+        xQueueReset(action_queue_);
+    }
 };
 
 static OttoController* g_otto_controller = nullptr;
@@ -907,5 +929,17 @@ void OttoControllerQueueBeatKeeping() {
 void OttoControllerQueueRandomDance() {
     if (g_otto_controller != nullptr) {
         g_otto_controller->QueueRandomDance();
+    }
+}
+
+void OttoControllerQueueContinuousDance() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->QueueContinuousDance();
+    }
+}
+
+void OttoControllerStopAll() {
+    if (g_otto_controller != nullptr) {
+        g_otto_controller->StopAll();
     }
 }

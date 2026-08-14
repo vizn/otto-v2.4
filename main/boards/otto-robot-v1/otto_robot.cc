@@ -12,6 +12,7 @@
 #include "mcp_server.h"
 #include "miot_client.h"
 #include "music_player.h"
+#include "otto_controller.h"
 #include "otto_emoji_display.h"
 #include "power_manager.h"
 #include "system_reset.h"
@@ -136,6 +137,15 @@ private:
 
         miot_client_ = new MiotClient();
         miot_client_->SetMusicPlayer(music_player_);
+        // 音乐播放结束（自然播完/被停止）：结束跟随音乐的连续舞蹈
+        music_player_->SetOnStoppedCallback([this]() {
+            ESP_LOGI(TAG, "Music stopped, stopping continuous dance");
+            OttoControllerStopAll();
+            // 播放结束后主动断开 MIOT 重连（模拟自动下线），确保下次唤醒词可正常监听
+            if (miot_client_ != nullptr) {
+                miot_client_->RequestReconnect();
+            }
+        });
         miot_client_->Start();
         ESP_LOGI(TAG, "MIOT client started");
     }
@@ -190,6 +200,16 @@ public:
         discharging = !charging;
         level = power_manager_->GetBatteryLevel();
         return true;
+    }
+
+    void OnUserInteract() override {
+        // 用户唤醒（按键切换对话/唤醒词）：停止本地 MIOT 音乐播放，避免与对话音频冲突
+        if (music_player_ != nullptr && music_player_->IsPlaying()) {
+            ESP_LOGI(TAG, "User interaction, stopping MIOT music playback");
+            music_player_->StopPlay();
+        }
+        // 用户打断：停止当前舞蹈/动作并归位
+        OttoControllerStopAll();
     }
 };
 

@@ -19,3 +19,4 @@ main/mmap_generate_emoji.h
 mmap_generate_*.h
 .clangd
 dance*.log
+chat_*.log

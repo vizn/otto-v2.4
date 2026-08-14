@@ -6,6 +6,7 @@
 #include <esp_audio_types.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -36,6 +37,8 @@ public:
 
     void SetAudioCodec(AudioCodec* codec) { codec_ = codec; }
     bool IsPlaying() const { return playing_; }
+    // 播放结束（自然播完或被停止）时回调，用于结束跟随音乐的舞蹈等联动
+    void SetOnStoppedCallback(std::function<void()> cb) { on_stopped_ = std::move(cb); }
 
 private:
     static constexpr const char* kStreamUrlBase = "http://192.168.199.162:8003/api/music/stream?song=";
@@ -57,6 +60,7 @@ private:
     TaskHandle_t task_handle_ = nullptr;
     QueueHandle_t command_queue_ = nullptr;
     AudioCodec* codec_ = nullptr;
+    std::function<void()> on_stopped_;
     volatile bool running_ = false;
     volatile bool playing_ = false;
     volatile bool paused_ = false;
@@ -67,6 +71,8 @@ private:
     void ProcessCommand(const Command& cmd);
     void PlayStream(const std::string& keyword);
     void Enqueue(const Command& cmd);
+    void NotifyStopped();
+    void ShowMessageOnScreen(const char* text);
 
     static std::string UrlEncode(const std::string& input);
 };

@@ -349,6 +349,25 @@ esp_err_t Ota::DoCheckVersion(const std::string& url, bool short_timeout) {
     }
 
     cJSON_Delete(root);
+
+    // 若版本检查走的是内网 OTA 服务器，将下载 URL 主机重写为内网服务器地址，
+    // 避免服务器返回公网域名（公网隧道可能不可达）导致固件下载失败。
+    std::string check_host = ExtractHost(url);
+    if (!check_host.empty() && IsPrivateIpv4(check_host) && !firmware_url_.empty()) {
+        size_t scheme_end = url.find("://");
+        size_t host_end = url.find_first_of('/', scheme_end + 3);
+        if (host_end != std::string::npos) {
+            std::string lan_base = url.substr(0, host_end);
+            size_t fw_scheme = firmware_url_.find("://");
+            size_t fw_path = firmware_url_.find('/', fw_scheme + 3);
+            if (fw_path != std::string::npos) {
+                std::string rewritten = lan_base + firmware_url_.substr(fw_path);
+                ESP_LOGI(TAG, "Rewrite firmware URL to intranet: %s", rewritten.c_str());
+                firmware_url_ = rewritten;
+            }
+        }
+    }
+
     return ESP_OK;
 }
 

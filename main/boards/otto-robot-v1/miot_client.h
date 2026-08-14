@@ -4,6 +4,7 @@
 #include <cJSON.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -30,6 +31,9 @@ public:
     void Stop();
     void SetMusicPlayer(MusicPlayer* player) { music_player_ = player; }
 
+    // 主动断开当前连接并重连（模拟自动下线），用于音乐播放结束后重置唤醒状态
+    void RequestReconnect();
+
 private:
     static constexpr const char* kServerUrl = "ws://192.168.199.162:8003/ws";
     static constexpr int kConnectId = 2;
@@ -41,6 +45,7 @@ private:
     std::mutex mutex_;
     bool running_ = false;
     bool stop_requested_ = false;
+    std::atomic<bool> reconnect_requested_{false};
 
     void Run();
     void ConnectAndServe();

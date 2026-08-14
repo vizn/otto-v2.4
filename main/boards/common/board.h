@@ -82,6 +82,13 @@ public:
     virtual void SetPowerSaveLevel(PowerSaveLevel level) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+
+    /**
+     * User-initiated interaction started (button press toggling chat, wake word, etc).
+     * Called from the main task before a new conversation begins, allowing boards to
+     * arbitrate exclusive audio resources (e.g. stop locally playing music).
+     */
+    virtual void OnUserInteract() {}
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

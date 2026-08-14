@@ -17,6 +17,20 @@ float EaseOutCubic(float t) {
 }
 }  // namespace
 
+volatile bool Otto::s_stop_requested_ = false;
+
+void Otto::RequestStop() {
+    s_stop_requested_ = true;
+}
+
+void Otto::ClearStop() {
+    s_stop_requested_ = false;
+}
+
+bool Otto::StopRequested() {
+    return s_stop_requested_;
+}
+
 Otto::Otto() {
     is_otto_resting_ = false;
     has_hands_ = false;
@@ -116,7 +130,7 @@ void Otto::MoveServos(int time, int servo_target[]) {
     }
 
     int steps = std::max(1, time / 10);
-    for (int step = 1; step <= steps; step++) {
+    for (int step = 1; step <= steps && !s_stop_requested_; step++) {
         float t = static_cast<float>(step) / static_cast<float>(steps);
         float eased_t = EaseOutCubic(t);
         for (int i = 0; i < SERVO_COUNT; i++) {
@@ -127,6 +141,10 @@ void Otto::MoveServos(int time, int servo_target[]) {
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
+    if (s_stop_requested_) {
+        return;
     }
 
     for (int i = 0; i < SERVO_COUNT; i++) {
@@ -165,7 +183,7 @@ void Otto::OscillateServos(int amplitude[SERVO_COUNT], int offset[SERVO_COUNT], 
     double ref = millis();
     double end_time = period * cycle + ref;
 
-    while (millis() < end_time) {
+    while (millis() < end_time && !s_stop_requested_) {
         for (int i = 0; i < SERVO_COUNT; i++) {
             if (servo_pins_[i] != -1) {
                 servo_[i].Refresh();
@@ -1050,30 +1068,30 @@ void Otto::SafeGroove() {
         SetRestState(false);
     }
 
-    // 1. 双脚小幅度交替点地（振幅12，中心90°，安全）
+    // 1. 双脚小幅度交替点地（振幅22，中心90°，安全）
     {
-        int A[SERVO_COUNT] = {0, 0, 12, 12, 0, 0};
+        int A[SERVO_COUNT] = {0, 0, 22, 22, 0, 0};
         int O[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
         double phase[SERVO_COUNT] = {0, 0, DEG2RAD(90), DEG2RAD(-90), 0, 0};
         Execute2(A, O, 600, phase, 6.0);
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
-    // 2. 双腿小幅度交替摆动（振幅12，中心90°）
+    // 2. 双腿小幅度交替摆动（振幅22，中心90°）
     {
-        int A[SERVO_COUNT] = {12, 12, 0, 0, 0, 0};
+        int A[SERVO_COUNT] = {22, 22, 0, 0, 0, 0};
         int O[SERVO_COUNT] = {90, 90, 90, 90, 90, 90};
         double phase[SERVO_COUNT] = {0, 0, 0, 0, 0, 0};
         Execute2(A, O, 600, phase, 6.0);
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
-    // 3. 身体上下小幅度律动（幅度12）
-    UpDown(4, 700, 12);
+    // 3. 身体上下小幅度律动（幅度22）
+    UpDown(4, 700, 22);
     vTaskDelay(pdMS_TO_TICKS(150));
 
-    // 4. 轻柔摇摆（幅度15，安全范围）
-    Swing(4, 800, 15);
+    // 4. 轻柔摇摆（幅度25，安全范围）
+    Swing(4, 800, 25);
     vTaskDelay(pdMS_TO_TICKS(150));
 
     // 5. 回到站立

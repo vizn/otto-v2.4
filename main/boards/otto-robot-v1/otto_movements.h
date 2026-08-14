@@ -99,6 +99,11 @@ public:
     void EnableServoLimit(int speed_limit_degree_per_sec = SERVO_LIMIT_DEFAULT);
     void DisableServoLimit();
 
+    // -- 运动停止控制（跨实例，供板级/控制器请求立即停止动作）
+    static void RequestStop();
+    static void ClearStop();
+    static bool StopRequested();
+
 private:
     Oscillator servo_[SERVO_COUNT];
 
@@ -111,6 +116,8 @@ private:
 
     bool is_otto_resting_;
     bool has_hands_;  // 是否有手部舵机
+
+    static volatile bool s_stop_requested_;
 
     void Execute(int amplitude[SERVO_COUNT], int offset[SERVO_COUNT], int period,
                  double phase_diff[SERVO_COUNT], float steps);
