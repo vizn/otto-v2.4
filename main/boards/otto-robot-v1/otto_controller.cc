@@ -29,6 +29,16 @@ private:
     bool has_hands_ = false;
     bool is_action_in_progress_ = false;
     bool continuous_dance_ = false;
+    int dance_routine_index_ = 0;
+
+    // 连续舞蹈编排条目：动作类型 + steps/speed/direction/amount
+    struct DanceMove {
+        int action_type;
+        int steps;
+        int speed;
+        int direction;
+        int amount;
+    };
 
     struct OttoActionParams {
         int action_type;
@@ -419,10 +429,10 @@ private:
                             controller->otto_.Home(true);
                             break;
                     }
-                    // 连续舞蹈模式：音乐播放期间自动续跳下一段 SafeGroove。
+                    // 连续舞蹈模式：音乐播放期间自动续跳下一段舞蹈编排动作。
                     // 在归位判断之前入队，使下方 pending_actions>0，跳过归位避免“急停+再启动”
                     if (controller->continuous_dance_ && !Otto::StopRequested()) {
-                        controller->QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
+                        controller->QueueNextContinuousDanceStep();
                     }
                     if(params.action_type != ACTION_SIT){
                         if (params.action_type != ACTION_HOME && params.action_type != ACTION_SERVO_SEQUENCE) {
@@ -881,13 +891,48 @@ public:
         }
     }
 
-    // 连续舞蹈：跟随音乐持续跳 SafeGroove，直到 OttoControllerStopAll 被调用
+    // 连续舞蹈：跟随音乐持续跳舞，直到 OttoControllerStopAll 被调用
     //（音乐播放结束由 MusicPlayer 回调触发）。入队前清除停止标志，避免上次停止残留。
     void QueueContinuousDance() {
         ESP_LOGI(TAG, "连续舞蹈模式开启：跟随音乐持续律动");
         Otto::ClearStop();
         continuous_dance_ = true;
+        dance_routine_index_ = 0;
         QueueAction(ACTION_SAFE_GROOVE, 1, 0, 0, 0);
+    }
+
+    // 连续舞蹈编排：音乐播放期间轮播内置动作（太空步/打节拍/花花舞/摇摆等）。
+    // 只用低幅度、重心稳定的安全动作，避免摔倒。花舞/打节拍内部会自行处理手部舵机有无。
+    void QueueNextContinuousDanceStep() {
+        static DanceMove routine[] = {
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_MOONWALK, 3, 900, LEFT, 20},        // 太空步（向左）
+            {ACTION_BEAT_KEEPING, 1, 0, 0, 0},          // 打节拍
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_SWING, 4, 800, 0, 25},              // 摇摆
+            {ACTION_MOONWALK, 3, 900, RIGHT, 20},       // 太空步（向右）
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_TIPTOE_SWING, 4, 800, 0, 20},       // 踮脚摇摆
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_FLOWER_DANCE, 1, 0, 0, 0},          // 花花舞
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_UPDOWN, 4, 700, 0, 15},             // 上下律动
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_JITTER, 4, 600, 0, 15},             // 抖动
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_ASCENDING_TURN, 2, 900, 0, 10},     // 旋转
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_BEAT_KEEPING, 1, 0, 0, 0},
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+            {ACTION_SHAKE_LEG, 3, 1500, RIGHT, 0},      // 摇腿
+            {ACTION_SAFE_GROOVE, 1, 0, 0, 0},
+        };
+        const int count = sizeof(routine) / sizeof(routine[0]);
+
+        const DanceMove& move = routine[dance_routine_index_ % count];
+        dance_routine_index_++;
+        ESP_LOGI(TAG, "连续舞蹈编排 #%d/%d: 动作=%d", dance_routine_index_, count, move.action_type);
+        QueueAction(move.action_type, move.steps, move.speed, move.direction, move.amount);
     }
 
     // 立即停止当前动作与所有排队动作并归位。

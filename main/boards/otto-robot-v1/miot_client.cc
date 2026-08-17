@@ -1,6 +1,8 @@
 #include "miot_client.h"
 
 #include <esp_log.h>
+#include <algorithm>
+#include <cctype>
 #include <cstring>
 
 #include "board.h"
@@ -207,13 +209,23 @@ void MiotClient::HandleControlCommand(const cJSON* data) {
                 music_player_->PlayByKeyword(keyword);
 
                 // 用户原话含跳舞意图（服务器只下发纯歌名，用 stt 原文兜底）
+                // 同时匹配英文指令（dance/groove 等），大小写不敏感
                 auto& app = Application::GetInstance();
                 const std::string& user_text = app.GetLastUserText();
-                if (user_text.find("跳舞") != std::string::npos ||
-                    user_text.find("舞蹈") != std::string::npos ||
-                    user_text.find("边跳边放") != std::string::npos ||
-                    user_text.find("跳着") != std::string::npos) {
-                    ESP_LOGI(TAG, "用户原话「%s」含跳舞意图，触发随机舞蹈", user_text.c_str());
+                std::string lower_text = user_text;
+                std::transform(lower_text.begin(), lower_text.end(), lower_text.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+                if (lower_text.find("跳舞") != std::string::npos ||
+                    lower_text.find("舞蹈") != std::string::npos ||
+                    lower_text.find("边跳边放") != std::string::npos ||
+                    lower_text.find("跳着") != std::string::npos ||
+                    lower_text.find("dance") != std::string::npos ||
+                    lower_text.find("dancing") != std::string::npos ||
+                    lower_text.find("danced") != std::string::npos ||
+                    lower_text.find("groove") != std::string::npos ||
+                    lower_text.find("party") != std::string::npos ||
+                    lower_text.find("shake a leg") != std::string::npos) {
+                    ESP_LOGI(TAG, "用户原话「%s」含跳舞意图，触发连续舞蹈", user_text.c_str());
                     OttoControllerQueueContinuousDance();
                     return;
                 }

@@ -36,6 +36,58 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 **构建产物**：`releases/v2.4.1_otto-robot-v1.zip`（merged-binary 14,675,796 B），已通过 USB 刷入 COM14，全部 Hash verified。
 
+### 3. 英文舞蹈指令识别
+
+修改 `main/boards/otto-robot-v1/miot_client.cc`，当服务器通过 MIOT 下发歌曲时，同步检查用户原话（STT 原文）是否含舞蹈意图关键词。
+
+新增英文关键词匹配（大小写不敏感）：
+
+| 关键词 | 说明 |
+|---|---|
+| `dance` / `dancing` / `danced` | 通用跳舞 |
+| `groove` | 律动 |
+| `party` | 派对 |
+| `shake a leg` | 摇腿 |
+
+匹配成功则调用 `OttoControllerQueueContinuousDance()`，使 Otto 在播放音乐的同时进入连续舞蹈模式。
+
+### 4. 连续舞蹈动作编排（v2.4.2）
+
+修改 `main/boards/otto-robot-v1/otto_controller.cc`，新增 `DanceMove` 结构体和 `QueueNextContinuousDanceStep()` 方法，将单一 SafeGroove 律动替换为多动作轮播编排。
+
+编排序列（共 21 个条目，循环播放）：
+
+| 序号 | 动作 | 参数 |
+|---|---|---|
+| 1 | SafeGroove（基础律动） | — |
+| 2 | Moonwalk（太空步） | 左，speed=900，amount=20 |
+| 3 | BeatKeeping（打节拍） | — |
+| 4 | SafeGroove | — |
+| 5 | Swing（摇摆） | speed=800，amount=25 |
+| 6 | Moonwalk（太空步） | 右，speed=900，amount=20 |
+| 7 | SafeGroove | — |
+| 8 | TiptoeSwing（踮脚摇摆） | speed=800，amount=20 |
+| 9 | SafeGroove | — |
+| 10 | FlowerDance（花花舞） | — |
+| 11 | SafeGroove | — |
+| 12 | UpDown（上下律动） | speed=700，amount=15 |
+| 13 | SafeGroove | — |
+| 14 | Jitter（抖动） | speed=600，amount=15 |
+| 15 | SafeGroove | — |
+| 16 | AscendingTurn（旋转） | speed=900，amount=10 |
+| 17 | SafeGroove | — |
+| 18 | BeatKeeping（打节拍） | — |
+| 19 | SafeGroove | — |
+| 20 | ShakeLeg（摇腿） | 右，speed=1500 |
+| 21 | SafeGroove | — |
+
+**设计原则**：
+- 所有动作幅度低、重心稳定，SafeGroove 作为基础律动穿插间隔
+- FlowerDance / BeatKeeping 内部已处理 `has_hands_` 标志，有手/无手舵机均安全
+- Moonwalk 每次仅走 3 步，方向左右交替
+
+`QueueContinuousDance()` 重置 `dance_routine_index_ = 0`，每次新会话从头开始编排。
+
 ## 服务器端功能
 
 服务器端改动位于 xiaozhi-esp32-server（`/vol1/docker/xiaozhi-esp32-server`），通过补丁方式部署。
@@ -82,6 +134,48 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 - `build_enhanced_prompt` 会以原始 `config["prompt"]` 重建增强提示词并覆盖临时注入，因此切换语言时直接整体替换 `prompt`，并在 `TTS.EdgeTTS.language` 写入对应语种，供模板 `<output_language_directive>` 使用
 - ASR（SenseVoice/FunASR）原生支持 zh/en/ja/ko/yue，无需切换
 
+### 3. 功夫英语课程音频集成（v2.4.2）
+
+将功夫英语（kungfuenglish.com）本地视频课程提取音频，集成到 Otto 语音点播系统。
+
+**资源来源**：fnOS 主机 `/vol1/kungfu-english-app/public/videos/`，共 7 个课程目录、约 16GB 视频。
+
+**音频提取**（在 fnOS 主机上用 ffmpeg 批量转换）：
+
+| 课程 | 来源 | 输出命名 | 数量 |
+|---|---|---|---|
+| FaceFonics 发音训练 | `facefonics-fixed/*-no-subtitles.mp4` | `功夫英语-FaceFonics-第NNN课.mp3` | 109 条 |
+| 泡脑子（Brain Soaking） | `lesson-NN/brain-soakingN-audio.mp4` | `功夫英语-泡脑子-第N课.mp3` | 10 条 |
+| 词汇拓展（单词歌） | `lesson-NN/word-song-N.mp4` | `功夫英语-单词歌-第N首.mp3` | 73 条 |
+| 第三只耳朵专辑 | `audio-ok/chapter-NN.mp3`（已有 MP3） | `功夫英语-第三只耳朵专辑-第NN章.mp3` | 16 条 |
+
+共 **208 条** MP3，总计约 1.9GB，存放在 fnOS `/vol1/1000/小赫用/`（容器挂载为 `/opt/xiaozhi-esp32-server/music:ro`）。
+
+**播放链路**：
+```
+用户语音 → Otto STT → LLM qwen3.5:9b(function_call)
+  → play_music(song_name="功夫英语-FaceFonics-第005课")
+  → MIOT 下发设备播放命令
+  → Otto PlayByKeyword("功夫英语-FaceFonics-第005课")
+  → GET http://192.168.199.162:8003/api/music/stream?song=功夫英语-FaceFonics-第005课
+  → miot_gateway._find_best_match()（difflib 模糊匹配文件名）
+  → 返回 200 audio/mpeg 流 → 设备端 MP3 解码播放
+```
+
+**LLM 工具调用**（已验证 qwen3.5:9b 行为）：
+
+| 用户指令 | LLM 返回的 song_name |
+|---|---|
+| "播放FaceFonics第5课" | `FaceFonics第5课` |
+| "播放泡脑子第3课" | `功夫英语-泡脑子-第3课` |
+| "播放功夫英语课程" | `功夫英语`（随机匹配） |
+| "播放音乐" | `random` |
+
+**服务器插件改动**：
+- `plugins_func/functions/play_music.py`：`play_music_function_desc` 更新，允许功夫英语课程音频点播，说明文件名格式
+- `plugins_func/functions/call_openclaw.py`：`_DEFAULT_DESCRIPTION` 更新，播放音频交 `play_music`，课程咨询交 `call_openclaw`
+- `data/.config.yaml`：`Intent.function_call.functions` 中 `call_openclaw` 已启用
+
 ## 固件语言能力调研（后续方向）
 
 | 唤醒模型 | 支持语言 | 说明 |
@@ -93,9 +187,31 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 - `custom_wake_word.cc` 使用 `esp_srmodel_filter(models_, ESP_MN_PREFIX, language_)` 按语言选择模型，运行时一次仅加载一个 MultiNet 实例
 - 日语/韩语唤醒词需使用 WakeNet9 固定唤醒词（如 こんにちはESP），当前 MultiNet 无日/韩模型
 
-## 部署方法（服务器端补丁）
+## 部署方法
+
+### 固件（v2.4.2）
+
+v2.4.2 通过 COM14 串口烧录（不通过 OTA）：
+
+```bash
+source /path/to/esp-idf/export.sh
+idf.py -p COM14 flash
+```
+
+固件版本保持 2.4.2（与 OTA 版本号相同），烧录后验证：
+- `self.get_system_info` → `application.version: 2.4.2`
+- `elf_sha256` 变为新值（含编排代码）
+- 系统日志出现 `连续舞蹈编排 #N/TOTAL: 动作=X`
+
+### 服务器端补丁
 
 1. 将 `core/admin_api.py`、`core/connection.py`、`core/helloHandle.py` 复制到服务器补丁目录
 2. 执行 `reapply.sh` 复制进容器（注意：`docker cp` 更可靠，reapply.sh 偶尔静默失败）
 3. 部署后用 `docker exec xiaozhi-esp32-server grep -c` 验证容器内文件已更新
 4. `docker restart xiaozhi-esp32-server` 重启生效
+
+### 功夫英语音频
+
+音频文件存放在 fnOS `/vol1/1000/小赫用/`，已挂载到服务器容器 music 目录。更新时：
+1. 将新 MP3 文件放入 `/vol1/1000/小赫用/`
+2. 服务器自动扫描（refresh_time: 300s），或 `docker restart xiaozhi-esp32-server` 立即刷新索引
