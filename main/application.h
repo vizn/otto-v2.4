@@ -7,6 +7,7 @@
 #include <esp_timer.h>
 
 #include <string>
+#include <atomic>
 #include <mutex>
 #include <deque>
 #include <memory>
@@ -117,6 +118,14 @@ public:
     AudioService& GetAudioService() { return audio_service_; }
 
     /**
+     * 学习卡片播放状态标志（线程安全）。
+     * 播放期间设备不向服务器上报音频、不播放服务器下发的 LLM 音频，
+     * 从而在整段卡片播放过程中禁用 LLM 对话。
+     */
+    void SetStudyCardPlaying(bool playing) { study_card_playing_ = playing; }
+    bool IsStudyCardPlaying() const { return study_card_playing_; }
+
+    /**
      * Get the most recent user speech text (from stt messages).
      * Combines a sliding window of recent stt segments so that an utterance
      * split across multiple stt messages (e.g. "边跳舞" + "电放音乐") can be
@@ -155,6 +164,7 @@ private:
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
+    std::atomic<bool> study_card_playing_ = false;  // 学习卡片播放期间禁用 LLM 对话
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 

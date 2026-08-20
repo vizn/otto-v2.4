@@ -1037,8 +1037,18 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     auto img_dsc = preview_image_cached_->image_dsc();
     lv_image_set_src(preview_image_, img_dsc);
     if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
-        // zoom factor 0.5
-        lv_image_set_scale(preview_image_, 128 * width_ / img_dsc->header.w);
+        // 等比缩放，完整适配半个屏幕（宽高都约束，避免竖图被裁剪）
+        lv_coord_t max_w = width_ / 2;
+        lv_coord_t max_h = height_ / 2;
+        lv_coord_t zoom_w = (max_w * 256) / img_dsc->header.w;
+        lv_coord_t zoom_h = (max_h * 256) / img_dsc->header.h;
+        lv_coord_t zoom = (zoom_w < zoom_h) ? zoom_w : zoom_h;
+        if (zoom > 256) {
+            zoom = 256;  // 不放大
+        }
+        lv_image_set_scale(preview_image_, zoom);
+        lv_obj_set_size(preview_image_, (img_dsc->header.w * zoom) / 256,
+                        (img_dsc->header.h * zoom) / 256);
     }
 
     // Hide emoji_box_

@@ -63,6 +63,44 @@ void MusicPlayer::PlayByKeyword(const std::string& keyword) {
     Enqueue(cmd);
 }
 
+void MusicPlayer::PlayRadio(const std::string& station) {
+    Command cmd{CommandType::kPlayRadio, {0}};
+    strncpy(cmd.payload, station.c_str(), sizeof(cmd.payload) - 1);
+    Enqueue(cmd);
+}
+
+void MusicPlayer::PlayWeather(const std::string& city) {
+    Command cmd{CommandType::kPlayWeather, {0}};
+    strncpy(cmd.payload, city.c_str(), sizeof(cmd.payload) - 1);
+    Enqueue(cmd);
+}
+
+void MusicPlayer::PlayStudyCard(const std::string& key) {
+    Command cmd{CommandType::kPlayStudyCard, {0}};
+    strncpy(cmd.payload, key.c_str(), sizeof(cmd.payload) - 1);
+    Enqueue(cmd);
+}
+
+void MusicPlayer::PlayPlaylist(const std::vector<std::string>& keywords) {
+    if (keywords.empty()) {
+        return;
+    }
+    Command cmd{CommandType::kPlaylist, {0}};
+    cmd.payload[0] = '\0';
+    cmd.extra = new std::vector<std::string>(keywords);  // 所有权转移给播放任务
+    Enqueue(cmd);
+}
+
+void MusicPlayer::Next() {
+    Command cmd{CommandType::kNext, {0}};
+    Enqueue(cmd);
+}
+
+void MusicPlayer::Previous() {
+    Command cmd{CommandType::kPrevious, {0}};
+    Enqueue(cmd);
+}
+
 void MusicPlayer::Pause() {
     Command cmd{CommandType::kPause, {0}};
     Enqueue(cmd);
@@ -108,23 +146,138 @@ void MusicPlayer::Run() {
         if (xQueueReceive(command_queue_, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
             continue;
         }
-        if (cmd.type == CommandType::kPlay) {
-            PlayStream(cmd.payload);
-        } else if (cmd.type == CommandType::kStop) {
-            stop_requested_ = true;
-            playing_ = false;
-            paused_ = false;
-            NotifyStopped();
-        } else if (cmd.type == CommandType::kPause) {
-            paused_ = true;
-        } else if (cmd.type == CommandType::kResume) {
-            paused_ = false;
-        } else if (cmd.type == CommandType::kShowMessage) {
-            ESP_LOGI(TAG, "Message: %.120s", cmd.payload);
-            ShowMessageOnScreen(cmd.payload);
+        switch (cmd.type) {
+            case CommandType::kPlay:
+                // 单曲播放：结束（自然播完/停止/切歌终止）后由 PlayStream 统一通知联动
+                single_play_requested_ = false;
+                pending_playlist_ = false;
+                playlist_mode_ = false;
+                PlayStream(cmd.payload, StreamMode::kMusic);
+                break;
+            case CommandType::kPlayRadio:
+                // 网络电台：持续流，播放后由停止/切歌终止
+                single_play_requested_ = false;
+                pending_playlist_ = false;
+                playlist_mode_ = false;
+                PlayStream(cmd.payload, StreamMode::kRadio);
+                break;
+            case CommandType::kPlayWeather:
+                // 天气播报（服务器 TTS 一次性音频），结束后通知
+                single_play_requested_ = false;
+                pending_playlist_ = false;
+                playlist_mode_ = false;
+                PlayStream(cmd.payload, StreamMode::kWeather);
+                break;
+            case CommandType::kPlayStudyCard:
+                // 学习卡片（词库一次性音频）
+                single_play_requested_ = false;
+                pending_playlist_ = false;
+                playlist_mode_ = false;
+                PlayStream(cmd.payload, StreamMode::kStudy);
+                break;
+            case CommandType::kPlaylist: {
+                std::vector<std::string>* pl =
+                    static_cast<std::vector<std::string>*>(cmd.extra);
+                cmd.extra = nullptr;
+                pending_playlist_ = false;
+                single_play_requested_ = false;
+                if (pl != nullptr) {
+                    PlayPlaylistInternal(std::move(*pl));
+                    delete pl;
+                } else {
+                    playlist_mode_ = false;
+                }
+                break;
+            }
+            case CommandType::kPause:
+                paused_ = true;
+                break;
+            case CommandType::kResume:
+                paused_ = false;
+                break;
+            case CommandType::kStop:
+                stop_requested_ = true;
+                playing_ = false;
+                paused_ = false;
+                // 歌单模式下停止由 PlayPlaylistInternal 收尾统一通知，
+                // 避免与连播循环退出时的通知重复触发重连。
+                if (!playlist_mode_) {
+                    NotifyStopped();
+                }
+                playlist_mode_ = false;
+                break;
+            case CommandType::kNext:
+                pending_next_ = true;
+                pending_prev_ = false;
+                break;
+            case CommandType::kPrevious:
+                pending_prev_ = true;
+                pending_next_ = false;
+                break;
+            case CommandType::kShowMessage:
+                ESP_LOGI(TAG, "Message: %.120s", cmd.payload);
+                ShowMessageOnScreen(cmd.payload);
+                break;
         }
     }
     vTaskDelete(nullptr);
+}
+
+// 歌单连播主循环：首曲后逐首 PlayStream，直到停止/切歌/歌单播完。
+void MusicPlayer::PlayPlaylistInternal(std::vector<std::string> playlist) {
+    playlist_ = std::move(playlist);
+    playlist_mode_ = true;
+    playlist_index_ = 0;
+    if (playlist_.empty()) {
+        playlist_mode_ = false;
+        NotifyStopped();
+        return;
+    }
+    stop_requested_ = false;
+    pending_next_ = false;
+    pending_prev_ = false;
+    ShowMessageOnScreen(DisplaySongName(playlist_[0]).c_str());
+    PlayStream(playlist_[0], StreamMode::kMusic);
+    while (playlist_mode_ && running_) {
+        // 停止（无切歌意图）或新单曲/新歌单介入：终止当前歌单
+        if (stop_requested_ && !pending_next_ && !pending_prev_) {
+            break;
+        }
+        if (single_play_requested_ || pending_playlist_) {
+            break;
+        }
+        int next_index = -1;
+        if (pending_next_) {
+            pending_next_ = false;
+            stop_requested_ = false;
+            next_index = static_cast<int>(playlist_index_) + 1;
+        } else if (pending_prev_) {
+            pending_prev_ = false;
+            stop_requested_ = false;
+            next_index = static_cast<int>(playlist_index_) - 1;
+        } else {
+            next_index = static_cast<int>(playlist_index_) + 1;
+        }
+        if (next_index < 0 || next_index >= static_cast<int>(playlist_.size())) {
+            break;
+        }
+        playlist_index_ = next_index;
+        ShowMessageOnScreen(DisplaySongName(playlist_[playlist_index_]).c_str());
+        PlayStream(playlist_[playlist_index_], StreamMode::kMusic);
+    }
+    playlist_mode_ = false;
+    NotifyStopped();
+}
+
+// 屏幕显示用歌曲名：去掉专辑路径与扩展名。
+std::string MusicPlayer::DisplaySongName(const std::string& keyword) {
+    size_t slash = keyword.find_last_of('/');
+    std::string base = (slash == std::string::npos) ? keyword : keyword.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos) {
+        base = base.substr(0, dot);
+    }
+    return base;
 }
 
 // ---------- MP3 帧头解析 ----------
@@ -177,15 +330,17 @@ static bool FindNextMp3Frame(const std::vector<uint8_t>& buf, size_t start, size
     return false;
 }
 
-void MusicPlayer::PlayStream(const std::string& keyword) {
+void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
     if (codec_ == nullptr) {
         ESP_LOGW(TAG, "No audio codec");
+        NotifyStopped();
         return;
     }
 
     auto* network = Board::GetInstance().GetNetwork();
     if (network == nullptr) {
         ESP_LOGW(TAG, "No network interface");
+        NotifyStopped();
         return;
     }
 
@@ -193,6 +348,9 @@ void MusicPlayer::PlayStream(const std::string& keyword) {
     std::string keyword_to_play = keyword;
     bool restart = true;
     const uint32_t dest_rate = codec_->output_sample_rate();
+
+    // 播放开始：暂停唤醒词检测，防止本地音乐播放被 LLM/唤醒语音打断
+    SuspendWakeWordForPlayback();
 
     // 空闲超时后 AudioService 会关闭 I2S 输出(掉电)；本地播放需自行打开，
     // 否则 i2s_channel_write 会在未运行的通道上永久阻塞导致无声。
@@ -205,10 +363,20 @@ void MusicPlayer::PlayStream(const std::string& keyword) {
     int64_t last_keepalive_ms = esp_timer_get_time() / 1000;
     audio_service.NotifyOutputActivity();
 
+    StreamMode active_mode = mode;
+    const char* url_base =
+        (active_mode == StreamMode::kRadio)    ? kRadioStreamUrlBase
+        : (active_mode == StreamMode::kWeather) ? kWeatherTtsUrlBase
+        : (active_mode == StreamMode::kStudy)   ? kStudyStreamUrlBase
+                                                : kStreamUrlBase;
+
     while (restart && running_ && !stop_requested_) {
         restart = false;
-        std::string url = kStreamUrlBase + UrlEncode(keyword_to_play);
-        ESP_LOGI(TAG, "Playing music: %s", keyword_to_play.c_str());
+        std::string url = url_base + UrlEncode(keyword_to_play);
+        const char* mode_str = (mode == StreamMode::kMusic) ? "music"
+                               : (mode == StreamMode::kRadio) ? "radio"
+                               : (mode == StreamMode::kStudy) ? "study" : "weather";
+        ESP_LOGI(TAG, "Playing stream (%s): %s", mode_str, keyword_to_play.c_str());
 
         auto http = network->CreateHttp(3);
         if (http == nullptr) {
@@ -279,8 +447,44 @@ void MusicPlayer::PlayStream(const std::string& keyword) {
                         break;
                     case CommandType::kPlay:
                         // 新歌曲命令：记录关键词，停止当前流后重新开始
+                        single_play_requested_ = true;  // 接管歌单
                         keyword_to_play = cmd.payload;
                         restart = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kPlayRadio:
+                        // 切换电台：更新目标，重启当前流
+                        active_mode = StreamMode::kRadio;
+                        url_base = kRadioStreamUrlBase;
+                        keyword_to_play = cmd.payload;
+                        restart = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kPlayWeather:
+                        active_mode = StreamMode::kWeather;
+                        url_base = kWeatherTtsUrlBase;
+                        keyword_to_play = cmd.payload;
+                        restart = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kPlayStudyCard:
+                        active_mode = StreamMode::kStudy;
+                        url_base = kStudyStreamUrlBase;
+                        keyword_to_play = cmd.payload;
+                        restart = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kPlaylist:
+                        // 新歌单命令：让当前流尽快结束，交由 Run 处理新歌单
+                        pending_playlist_ = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kNext:
+                        pending_next_ = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kPrevious:
+                        pending_prev_ = true;
                         stop_requested_ = true;
                         break;
                 }
@@ -459,13 +663,41 @@ void MusicPlayer::PlayStream(const std::string& keyword) {
     }
 
     ESP_LOGI(TAG, "Playback finished");
-    NotifyStopped();
+    // 歌单连播模式下（PlayPlaylistInternal 内部驱动逐首播放），单首结束不触发停止回调，
+    // 由连播主循环统一决定继续下一首或整体停止后再回调，否则首曲播完就会断开 MIOT 导致连播中断。
+    if (!playlist_mode_) {
+        NotifyStopped();
+    }
 }
 
 void MusicPlayer::NotifyStopped() {
+    // 播放彻底结束：恢复唤醒词检测，允许用户再次用语音唤醒交互
+    ResumeWakeWordForPlayback();
     if (on_stopped_ != nullptr) {
         on_stopped_();
     }
+}
+
+void MusicPlayer::SuspendWakeWordForPlayback() {
+    if (wake_word_suspended_) {
+        return;
+    }
+    wake_word_suspended_ = true;
+    auto& audio_service = Application::GetInstance().GetAudioService();
+    if (audio_service.IsWakeWordRunning()) {
+        audio_service.EnableWakeWordDetection(false);
+        ESP_LOGI(TAG, "本地音乐播放中，暂停唤醒词检测");
+    }
+}
+
+void MusicPlayer::ResumeWakeWordForPlayback() {
+    if (!wake_word_suspended_) {
+        return;
+    }
+    wake_word_suspended_ = false;
+    auto& audio_service = Application::GetInstance().GetAudioService();
+    audio_service.EnableWakeWordDetection(true);
+    ESP_LOGI(TAG, "本地音乐播放结束，恢复唤醒词检测");
 }
 
 void MusicPlayer::ShowMessageOnScreen(const char* text) {

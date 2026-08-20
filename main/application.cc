@@ -225,6 +225,10 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
+                // 学习卡片播放期间不上报任何音频，阻止残留/后续语音触发 LLM
+                if (study_card_playing_) {
+                    continue;
+                }
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
                     // Drop the remaining packets. Leaving them in the queue would
                     // stall the Opus codec task (it waits for queue space), which in
@@ -516,7 +520,8 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        if (GetDeviceState() == kDeviceStateSpeaking) {
+        // 学习卡片播放期间忽略服务器下发的音频，避免残留 LLM 回话播出来
+        if (GetDeviceState() == kDeviceStateSpeaking && !study_card_playing_) {
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });

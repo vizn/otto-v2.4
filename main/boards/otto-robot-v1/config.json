@@ -10,13 +10,9 @@
                 "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH=\"certs\"",
                 "CONFIG_OTA_URL=\"https://xiaozhi.zillionairetravel.com/xiaozhi/ota/\"",
                 "CONFIG_OTA_URL_LAN=\"http://192.168.199.162:8003/xiaozhi/ota/\"",
-                "# CONFIG_USE_AFE_WAKE_WORD is not set",
-                "CONFIG_USE_CUSTOM_WAKE_WORD=y",
-                "# CONFIG_SR_MN_EN_NONE is not set",
-                "CONFIG_SR_MN_EN_MULTINET6_QUANT=y",
-                "CONFIG_CUSTOM_WAKE_WORD=\"OK EMO\"",
-                "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"OK EMO\"",
-                "CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=20"
+                "CONFIG_USE_AFE_WAKE_WORD=y",
+                "# CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS is not set",
+                "CONFIG_SR_WN_WN9_HEYIVY_TTS2=y"
             ]
         }
     ]

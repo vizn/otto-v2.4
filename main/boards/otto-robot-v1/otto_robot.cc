@@ -137,13 +137,13 @@ private:
 
         miot_client_ = new MiotClient();
         miot_client_->SetMusicPlayer(music_player_);
-        // 音乐播放结束（自然播完/被停止）：结束跟随音乐的连续舞蹈
+        // 音乐播放结束（自然播完/被停止）：结束跟随音乐的连续舞蹈；
+        // 若处于课程连播则自动续播下一课，否则解除学习卡片静音并重连恢复唤醒
         music_player_->SetOnStoppedCallback([this]() {
             ESP_LOGI(TAG, "Music stopped, stopping continuous dance");
             OttoControllerStopAll();
-            // 播放结束后主动断开 MIOT 重连（模拟自动下线），确保下次唤醒词可正常监听
             if (miot_client_ != nullptr) {
-                miot_client_->RequestReconnect();
+                miot_client_->HandlePlaybackStopped();
             }
         });
         miot_client_->Start();
