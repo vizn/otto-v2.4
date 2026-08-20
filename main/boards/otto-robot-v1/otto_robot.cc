@@ -168,8 +168,22 @@ private:
 public:
     OttoRobot()
         : boot_button_(BOOT_BUTTON_GPIO), audio_codec_(nullptr), miot_client_(nullptr), music_player_(nullptr) {
-        // 旧版 otto-robot 硬件（无摄像头、24pin ST7789、INMP441 + MAX98357）
+        // 沿用上游 otto-robot (v2.4.2) 的硬件版本选择结构，但本板固定为无摄像头硬件
+        // （24pin ST7789 + INMP441 + MAX98357），仅支持 OTTO_VERSION_NO_CAMERA。
+        // 按 OTTO_HARDWARE_VERSION 选择 hw_config，便于后续直接 git merge 吸收上游板级改进。
+#if OTTO_HARDWARE_VERSION == OTTO_VERSION_AUTO
+        // 自动检测：本板无摄像头，直接按无摄像头配置初始化
         hw_config_ = OTTO_V1_CONFIG;
+        ESP_LOGI(TAG, "硬件版本: 自动检测 -> 无摄像头版 (OTTO_V1_CONFIG)");
+#elif OTTO_HARDWARE_VERSION == OTTO_VERSION_CAMERA
+        // 本板不含摄像头，强制摄像头配置会在硬件上失败
+        #error "otto-robot-v1 不支持 OTTO_VERSION_CAMERA，请改用上游 otto-robot 板"
+#elif OTTO_HARDWARE_VERSION == OTTO_VERSION_NO_CAMERA
+        hw_config_ = OTTO_V1_CONFIG;
+        ESP_LOGI(TAG, "硬件版本: 无摄像头版 (OTTO_V1_CONFIG)");
+#else
+        #error "OTTO_HARDWARE_VERSION 设置无效，请使用 OTTO_VERSION_AUTO / OTTO_VERSION_CAMERA / OTTO_VERSION_NO_CAMERA"
+#endif
 
         InitializeSpi();
         InitializeLcdDisplay();
