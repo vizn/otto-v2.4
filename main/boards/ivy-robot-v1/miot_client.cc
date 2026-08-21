@@ -352,8 +352,29 @@ void MiotClient::EnginePlayWeather(const std::string& city, const std::string& c
 
 void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word, bool course) {
     if (music_player_ == nullptr) return;
+
+    // key 为空时（MCP 直调未带 key）自动从词库服务获取：课程取起始卡，否则取随机卡片。
+    // 这样设备侧 self.ivy.play_course 可独立工作，不再依赖 MIOT /ws 下发 key。
+    std::string real_key = key;
+    std::string real_word = word;
+    if (real_key.empty()) {
+        if (course) {
+            if (!FetchStudyCourse(word, real_word, real_key)) {
+                ESP_LOGW(TAG, "学习课程: 未能获取起始卡，放弃播放");
+                return;
+            }
+        } else {
+            if (!FetchStudyCard(real_word, real_key)) {
+                ESP_LOGW(TAG, "学习卡片: 未能获取随机卡片，放弃播放");
+                return;
+            }
+        }
+        ESP_LOGI(TAG, "自动获取学习%s: word=[%s] key=[%s]", course ? "课程" : "卡片",
+                 real_word.c_str(), real_key.c_str());
+    }
+
     ESP_LOGI(TAG, "收到学习%s指令: word=[%s] key=[%s]", course ? "课程" : "卡片",
-             word.c_str(), key.c_str());
+             real_word.c_str(), real_key.c_str());
     // 学习卡片播放期间禁用 LLM：置位标志（丢弃出站/入站音频）并中止当前会话。
     // 唤醒词暂停仅关闭唤醒检测，不停已在进行的监听会话，故需显式停听。
     auto& app = Application::GetInstance();
@@ -372,12 +393,12 @@ void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word
     // 课程连播状态（单卡学习不进入连播）
     course_mode_.store(course);
     course_stopped_.store(!course);
-    last_course_key_ = key;
-    ShowStudyImage(key);
-    if (!word.empty()) {
-        music_player_->ShowMessage("学习卡片：" + word);
+    last_course_key_ = real_key;
+    ShowStudyImage(real_key);
+    if (!real_word.empty()) {
+        music_player_->ShowMessage("学习卡片：" + real_word);
     }
-    music_player_->PlayStudyCard(key);
+    music_player_->PlayStudyCard(real_key);
 }
 
 // 解析"边跳舞边放<歌曲名>"指令。命中返回 true 并输出实际要播放的歌曲关键词。
@@ -555,6 +576,104 @@ std::string MiotClient::FetchWeatherText(const std::string& city) {
     }
     cJSON_Delete(root);
     return text;
+}
+
+bool MiotClient::FetchStudyCard(std::string& word, std::string& key) {
+    auto& board = Board::GetInstance();
+    auto* network = board.GetNetwork();
+    if (network == nullptr) {
+        ESP_LOGW(TAG, "No network interface for study card fetch");
+        return false;
+    }
+    auto http = network->CreateHttp(3);
+    if (http == nullptr) {
+        ESP_LOGE(TAG, "Failed to create http client for study card fetch");
+        return false;
+    }
+    http->SetTimeout(15000);
+    http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
+    http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
+    http->SetHeader("Accept-Encoding", "identity");
+    if (!http->Open("GET", kStudyCardApiBase)) {
+        ESP_LOGE(TAG, "Study card fetch HTTP open failed: %s", kStudyCardApiBase);
+        http->Close();
+        return false;
+    }
+    if (http->GetStatusCode() != 200) {
+        ESP_LOGE(TAG, "Study card fetch HTTP status %d", http->GetStatusCode());
+        http->Close();
+        return false;
+    }
+    std::string body = http->ReadAll();
+    http->Close();
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "Study card fetch invalid JSON");
+        return false;
+    }
+    cJSON* w = cJSON_GetObjectItem(root, "word");
+    cJSON* k = cJSON_GetObjectItem(root, "key");
+    if (k != nullptr && cJSON_IsString(k) && k->valuestring != nullptr && strlen(k->valuestring) > 0) {
+        key = k->valuestring;
+        if (w != nullptr && cJSON_IsString(w) && w->valuestring != nullptr) {
+            word = w->valuestring;
+        }
+        cJSON_Delete(root);
+        return true;
+    }
+    cJSON_Delete(root);
+    return false;
+}
+
+bool MiotClient::FetchStudyCourse(const std::string& text, std::string& word, std::string& key) {
+    auto& board = Board::GetInstance();
+    auto* network = board.GetNetwork();
+    if (network == nullptr) {
+        ESP_LOGW(TAG, "No network interface for study course fetch");
+        return false;
+    }
+    std::string url = kStudyCourseFindApiBase;
+    if (!text.empty()) {
+        url += "?text=" + UrlEncode(text);
+    }
+    auto http = network->CreateHttp(3);
+    if (http == nullptr) {
+        ESP_LOGE(TAG, "Failed to create http client for study course fetch");
+        return false;
+    }
+    http->SetTimeout(15000);
+    http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
+    http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
+    http->SetHeader("Accept-Encoding", "identity");
+    if (!http->Open("GET", url)) {
+        ESP_LOGE(TAG, "Study course fetch HTTP open failed: %s", url.c_str());
+        http->Close();
+        return false;
+    }
+    if (http->GetStatusCode() != 200) {
+        ESP_LOGE(TAG, "Study course fetch HTTP status %d", http->GetStatusCode());
+        http->Close();
+        return false;
+    }
+    std::string body = http->ReadAll();
+    http->Close();
+    cJSON* root = cJSON_Parse(body.c_str());
+    if (root == nullptr) {
+        ESP_LOGW(TAG, "Study course fetch invalid JSON");
+        return false;
+    }
+    cJSON* w = cJSON_GetObjectItem(root, "word");
+    cJSON* k = cJSON_GetObjectItem(root, "key");
+    if (k != nullptr && cJSON_IsString(k) && k->valuestring != nullptr && strlen(k->valuestring) > 0) {
+        key = k->valuestring;
+        if (w != nullptr && cJSON_IsString(w) && w->valuestring != nullptr) {
+            word = w->valuestring;
+        }
+        cJSON_Delete(root);
+        return true;
+    }
+    cJSON_Delete(root);
+    return false;
 }
 
 bool MiotClient::ShowStudyImage(const std::string& key) {

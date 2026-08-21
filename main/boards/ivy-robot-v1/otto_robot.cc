@@ -210,7 +210,7 @@ private:
             });
 
         mcp_server.AddTool("self.ivy.play_course",
-            "学习卡片/课程。key: 课程卡片 key；word: 可选显示词；course=true 为课程连播。",
+            "学习卡片/课程。key: 课程卡片 key（可留空，设备自动从词库取卡）；word: 可选显示词；course=true 为课程连播。",
             PropertyList({Property("key", kPropertyTypeString, ""),
                           Property("word", kPropertyTypeString, ""),
                           Property("course", kPropertyTypeBoolean, false)}),
@@ -218,7 +218,6 @@ private:
                 std::string key = properties["key"].value<std::string>();
                 std::string word = properties["word"].value<std::string>();
                 bool course = properties["course"].value<bool>();
-                if (key.empty()) return "缺少 key 参数";
                 if (miot_client_ != nullptr) miot_client_->McpPlayStudy(key, word, course);
                 return true;
             });

@@ -54,6 +54,9 @@ private:
     static constexpr const char* kWeatherApiBase = "http://192.168.199.162:8003/api/weather_now?city=";
     static constexpr const char* kStudyImageUrlBase = "http://192.168.199.162:8003/api/study/image?key=";
     static constexpr const char* kStudyCourseNextApiBase = "http://192.168.199.162:8003/api/study/course/next?after=";
+    // 学习卡片/课程起始卡：从 8001 词库服务自取 {word,key}（MCP 路径下 key 为空时自动获取，去除对 /ws 的依赖）
+    static constexpr const char* kStudyCardApiBase = "http://192.168.199.162:8001/api/study/card";
+    static constexpr const char* kStudyCourseFindApiBase = "http://192.168.199.162:8001/api/study/course/find";
     static constexpr int kConnectId = 2;
     static constexpr int kHeartbeatIntervalMs = 30000;
     static constexpr int kReconnectDelayMs = 5000;
@@ -94,6 +97,10 @@ private:
     bool ShowStudyImage(const std::string& key);
     // 课程连播：拉取 /api/study/course/next?after= 的下一课；成功返回 true 并输出 word/key
     bool FetchNextCourse(const std::string& after, std::string& word, std::string& key);
+    // 随机学习卡片：GET /api/study/card -> {word,key}；成功返回 true
+    bool FetchStudyCard(std::string& word, std::string& key);
+    // 课程起始卡：GET /api/study/course/find?text= -> {word,key}；成功返回 true
+    bool FetchStudyCourse(const std::string& text, std::string& word, std::string& key);
     // 主任务内续播下一课（显示封面 -> 播放音频）；课程结束/失败时退出连播并复位
     void ContinueCourse(const std::string& after);
     static std::string UrlEncode(const std::string& input);
