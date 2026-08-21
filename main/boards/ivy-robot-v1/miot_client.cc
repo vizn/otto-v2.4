@@ -200,156 +200,184 @@ void MiotClient::HandleControlCommand(const cJSON* data) {
         return;
     }
 
+    // MIOT /ws 命令派发：转发到媒体引擎方法（与 MCP 工具共用同一套逻辑）
     if (strcmp(type, "music") == 0) {
-        // {"type":"music","text":"关键词"}
         cJSON* text = cJSON_GetObjectItem(data, "text");
         if (text != nullptr && cJSON_IsString(text)) {
-            const char* keyword = text->valuestring;
-            ESP_LOGI(TAG, "收到音乐指令关键词: [%s]", keyword);
-
-            // 边跳舞边放<歌曲名>：随机/指定音乐 + 随机舞蹈
-            std::string play_keyword;
-            if (ParseDanceWithMusic(keyword, play_keyword)) {
-                music_player_->PlayByKeyword(play_keyword);
-                ESP_LOGI(TAG, "「%s」触发随机音乐舞蹈，播放歌曲: %s", keyword, play_keyword.c_str());
-                OttoControllerQueueContinuousDance();
-            } else {
-                music_player_->PlayByKeyword(keyword);
-
-                // 用户原话含跳舞意图（服务器只下发纯歌名，用 stt 原文兜底）
-                // 同时匹配英文指令（dance/groove 等），大小写不敏感
-                auto& app = Application::GetInstance();
-                const std::string& user_text = app.GetLastUserText();
-                std::string lower_text = user_text;
-                std::transform(lower_text.begin(), lower_text.end(), lower_text.begin(),
-                               [](unsigned char c) { return std::tolower(c); });
-                if (lower_text.find("跳舞") != std::string::npos ||
-                    lower_text.find("舞蹈") != std::string::npos ||
-                    lower_text.find("边跳边放") != std::string::npos ||
-                    lower_text.find("跳着") != std::string::npos ||
-                    lower_text.find("dance") != std::string::npos ||
-                    lower_text.find("dancing") != std::string::npos ||
-                    lower_text.find("danced") != std::string::npos ||
-                    lower_text.find("groove") != std::string::npos ||
-                    lower_text.find("party") != std::string::npos ||
-                    lower_text.find("shake a leg") != std::string::npos) {
-                    ESP_LOGI(TAG, "用户原话「%s」含跳舞意图，触发连续舞蹈", user_text.c_str());
-                    OttoControllerQueueContinuousDance();
-                    return;
-                }
-
-                // 音乐+动作联动：播放花花舞相关歌曲时触发舞蹈编排
-                TriggerDanceForSong(keyword);
-            }
+            EnginePlayMusic(text->valuestring);
         }
     } else if (strcmp(type, "music_control") == 0) {
-        // {"type":"music_control","action":"play|pause|next|previous|stop"}
         cJSON* action = cJSON_GetObjectItem(data, "action");
         if (action != nullptr && cJSON_IsString(action)) {
-            const char* a = action->valuestring;
-            if (strcmp(a, "play") == 0) {
-                music_player_->Resume();
-            } else if (strcmp(a, "pause") == 0) {
-                music_player_->Pause();
-            } else if (strcmp(a, "stop") == 0) {
-                // 显式停止会打断课程连播：禁止播完后自动续播下一课
-                course_mode_.store(false);
-                course_stopped_.store(true);
-                music_player_->StopPlay();
-            } else if (strcmp(a, "next") == 0) {
-                course_mode_.store(false);
-                course_stopped_.store(true);
-                music_player_->Next();
-            } else if (strcmp(a, "previous") == 0) {
-                course_mode_.store(false);
-                course_stopped_.store(true);
-                music_player_->Previous();
-            }
+            EngineControlMusic(action->valuestring);
         }
     } else if (strcmp(type, "album") == 0) {
-        // {"type":"album","album":"专辑名"}：从服务器拉取歌单并连播
         cJSON* album = cJSON_GetObjectItem(data, "album");
         if (album != nullptr && cJSON_IsString(album)) {
-            const char* name = album->valuestring;
-            ESP_LOGI(TAG, "收到专辑播放指令: [%s]", name);
-            std::vector<std::string> playlist = FetchAlbumPlaylist(name);
-            if (playlist.empty()) {
-                ESP_LOGW(TAG, "专辑「%s」歌单为空，无法播放", name);
-            } else {
-                ESP_LOGI(TAG, "专辑「%s」共 %d 首，开始连播", name, (int)playlist.size());
-                music_player_->PlayPlaylist(std::move(playlist));
-            }
+            EnginePlayAlbum(album->valuestring);
         }
     } else if (strcmp(type, "chat") == 0) {
-        // 文本消息，音乐播放器显示歌词/文本（可选）
         cJSON* text = cJSON_GetObjectItem(data, "text");
         if (text != nullptr && cJSON_IsString(text)) {
-            music_player_->ShowMessage(text->valuestring);
+            EngineShowChat(text->valuestring);
         }
     } else if (strcmp(type, "radio") == 0) {
-        // {"type":"radio","station":"qtfm-dszs","name":"中国之声"}
         cJSON* station = cJSON_GetObjectItem(data, "station");
         cJSON* name = cJSON_GetObjectItem(data, "name");
         if (station != nullptr && cJSON_IsString(station)) {
-            ESP_LOGI(TAG, "收到电台播放指令: [%s]", station->valuestring);
-            music_player_->PlayRadio(station->valuestring);
-            if (name != nullptr && cJSON_IsString(name) && strlen(name->valuestring) > 0) {
-                std::string shown = "电台：" + std::string(name->valuestring);
-                music_player_->ShowMessage(shown);
-            }
+            EnginePlayRadio(station->valuestring,
+                            (name != nullptr && cJSON_IsString(name)) ? name->valuestring : "");
         }
     } else if (strcmp(type, "weather") == 0) {
-        // {"type":"weather","city":"北京","city_enc":"..."}
         cJSON* city = cJSON_GetObjectItem(data, "city");
         cJSON* enc = cJSON_GetObjectItem(data, "city_enc");
         std::string city_name = (city != nullptr && cJSON_IsString(city)) ? city->valuestring : "";
         std::string city_enc_str =
             (enc != nullptr && cJSON_IsString(enc)) ? enc->valuestring : UrlEncode(city_name);
-        ESP_LOGI(TAG, "收到天气播报指令: [%s]", city_name.c_str());
-        // 先拉取天气文本上屏（复用音乐播放器的消息显示链路）
-        std::string weather_text = FetchWeatherText(city_name);
-        if (!weather_text.empty()) {
-            music_player_->ShowMessage(weather_text);
-        }
-        // 再播放服务器 EdgeTTS 合成的天气播报音频
-        music_player_->PlayWeather(city_enc_str);
+        EnginePlayWeather(city_name, city_enc_str);
     } else if (strcmp(type, "study_card") == 0 || strcmp(type, "study_course") == 0) {
-        // {"type":"study_card","word":"cat","key":"aflq68xb"} 单卡直学
-        // {"type":"study_course","word":"...","key":"kc-001"} 课程连播（播完自动续下一课）
         bool course = strcmp(type, "study_course") == 0;
         cJSON* word = cJSON_GetObjectItem(data, "word");
         cJSON* key = cJSON_GetObjectItem(data, "key");
         std::string word_str = (word != nullptr && cJSON_IsString(word)) ? word->valuestring : "";
         std::string key_str = (key != nullptr && cJSON_IsString(key)) ? key->valuestring : "";
-        ESP_LOGI(TAG, "收到学习%s指令: word=[%s] key=[%s]", course ? "课程" : "卡片",
-                 word_str.c_str(), key_str.c_str());
         if (!key_str.empty()) {
-            // 学习卡片播放期间禁用 LLM：置位标志（丢弃出站/入站音频）并中止当前会话。
-            // 唤醒词暂停仅关闭唤醒检测，不停已在进行的监听会话，故需显式停听。
-            auto& app = Application::GetInstance();
-            app.SetStudyCardPlaying(true);
-            app.Schedule([&app]() {
-                auto st = app.GetDeviceState();
-                if (st == kDeviceStateSpeaking || st == kDeviceStateListening) {
-                    app.AbortSpeaking(kAbortReasonNone);
-                }
-                if (st == kDeviceStateListening) {
-                    app.StopListening();
-                }
-                while (app.GetAudioService().PopPacketFromSendQueue()) {
-                }
-            });
-            // 课程连播状态（单卡学习不进入连播）
-            course_mode_.store(course);
-            course_stopped_.store(!course);
-            last_course_key_ = key_str;
-            ShowStudyImage(key_str);
-            if (!word_str.empty()) {
-                music_player_->ShowMessage("学习卡片：" + word_str);
-            }
-            music_player_->PlayStudyCard(key_str);
+            EnginePlayStudy(key_str, word_str, course);
         }
     }
+}
+
+// === 媒体引擎方法：MCP 工具与 MIOT /ws 共用，去除对命令字符串派发的依赖 ===
+
+void MiotClient::EnginePlayMusic(const std::string& keyword) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "播放音乐关键词: [%s]", keyword.c_str());
+
+    // 边跳舞边放<歌曲名>：随机/指定音乐 + 随机舞蹈
+    std::string play_keyword;
+    if (ParseDanceWithMusic(keyword, play_keyword)) {
+        music_player_->PlayByKeyword(play_keyword);
+        ESP_LOGI(TAG, "「%s」触发随机音乐舞蹈，播放歌曲: %s", keyword.c_str(), play_keyword.c_str());
+        OttoControllerQueueContinuousDance();
+    } else {
+        music_player_->PlayByKeyword(keyword);
+
+        // 用户原话含跳舞意图（服务器只下发纯歌名，用 stt 原文兜底）
+        // 同时匹配英文指令（dance/groove 等），大小写不敏感
+        auto& app = Application::GetInstance();
+        const std::string& user_text = app.GetLastUserText();
+        std::string lower_text = user_text;
+        std::transform(lower_text.begin(), lower_text.end(), lower_text.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        if (lower_text.find("跳舞") != std::string::npos ||
+            lower_text.find("舞蹈") != std::string::npos ||
+            lower_text.find("边跳边放") != std::string::npos ||
+            lower_text.find("跳着") != std::string::npos ||
+            lower_text.find("dance") != std::string::npos ||
+            lower_text.find("dancing") != std::string::npos ||
+            lower_text.find("danced") != std::string::npos ||
+            lower_text.find("groove") != std::string::npos ||
+            lower_text.find("party") != std::string::npos ||
+            lower_text.find("shake a leg") != std::string::npos) {
+            ESP_LOGI(TAG, "用户原话「%s」含跳舞意图，触发连续舞蹈", user_text.c_str());
+            OttoControllerQueueContinuousDance();
+            return;
+        }
+
+        // 音乐+动作联动：播放花花舞相关歌曲时触发舞蹈编排
+        TriggerDanceForSong(keyword);
+    }
+}
+
+void MiotClient::EngineControlMusic(const std::string& action) {
+    if (music_player_ == nullptr) return;
+    if (action == "play") {
+        music_player_->Resume();
+    } else if (action == "pause") {
+        music_player_->Pause();
+    } else if (action == "stop") {
+        // 显式停止会打断课程连播：禁止播完后自动续播下一课
+        course_mode_.store(false);
+        course_stopped_.store(true);
+        music_player_->StopPlay();
+    } else if (action == "next") {
+        course_mode_.store(false);
+        course_stopped_.store(true);
+        music_player_->Next();
+    } else if (action == "previous") {
+        course_mode_.store(false);
+        course_stopped_.store(true);
+        music_player_->Previous();
+    }
+}
+
+void MiotClient::EnginePlayAlbum(const std::string& album) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "收到专辑播放指令: [%s]", album.c_str());
+    std::vector<std::string> playlist = FetchAlbumPlaylist(album);
+    if (playlist.empty()) {
+        ESP_LOGW(TAG, "专辑「%s」歌单为空，无法播放", album.c_str());
+    } else {
+        ESP_LOGI(TAG, "专辑「%s」共 %d 首，开始连播", album.c_str(), (int)playlist.size());
+        music_player_->PlayPlaylist(std::move(playlist));
+    }
+}
+
+void MiotClient::EngineShowChat(const std::string& text) {
+    if (music_player_ == nullptr) return;
+    music_player_->ShowMessage(text);
+}
+
+void MiotClient::EnginePlayRadio(const std::string& station, const std::string& name) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "收到电台播放指令: [%s]", station.c_str());
+    music_player_->PlayRadio(station);
+    if (!name.empty()) {
+        std::string shown = "电台：" + name;
+        music_player_->ShowMessage(shown);
+    }
+}
+
+void MiotClient::EnginePlayWeather(const std::string& city, const std::string& city_enc) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "收到天气播报指令: [%s]", city.c_str());
+    // 先拉取天气文本上屏（复用音乐播放器的消息显示链路）
+    std::string weather_text = FetchWeatherText(city);
+    if (!weather_text.empty()) {
+        music_player_->ShowMessage(weather_text);
+    }
+    // 再播放服务器 EdgeTTS 合成的天气播报音频
+    music_player_->PlayWeather(city_enc);
+}
+
+void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word, bool course) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "收到学习%s指令: word=[%s] key=[%s]", course ? "课程" : "卡片",
+             word.c_str(), key.c_str());
+    // 学习卡片播放期间禁用 LLM：置位标志（丢弃出站/入站音频）并中止当前会话。
+    // 唤醒词暂停仅关闭唤醒检测，不停已在进行的监听会话，故需显式停听。
+    auto& app = Application::GetInstance();
+    app.SetStudyCardPlaying(true);
+    app.Schedule([&app]() {
+        auto st = app.GetDeviceState();
+        if (st == kDeviceStateSpeaking || st == kDeviceStateListening) {
+            app.AbortSpeaking(kAbortReasonNone);
+        }
+        if (st == kDeviceStateListening) {
+            app.StopListening();
+        }
+        while (app.GetAudioService().PopPacketFromSendQueue()) {
+        }
+    });
+    // 课程连播状态（单卡学习不进入连播）
+    course_mode_.store(course);
+    course_stopped_.store(!course);
+    last_course_key_ = key;
+    ShowStudyImage(key);
+    if (!word.empty()) {
+        music_player_->ShowMessage("学习卡片：" + word);
+    }
+    music_player_->PlayStudyCard(key);
 }
 
 // 解析"边跳舞边放<歌曲名>"指令。命中返回 true 并输出实际要播放的歌曲关键词。
@@ -717,60 +745,27 @@ void MiotClient::ContinueCourse(const std::string& after) {
     music_player_->PlayStudyCard(key);
 }
 
-// === MCP 媒体工具入口：复用既有 MIOT 处理逻辑，不复制播放代码 ===
+// === MCP 媒体工具入口：直接调用媒体引擎方法，不构造命令 JSON ===
 void MiotClient::McpPlayMusic(const std::string& keyword) {
-    cJSON* cmd = cJSON_CreateObject();
-    cJSON_AddStringToObject(cmd, "type", "music");
-    cJSON_AddStringToObject(cmd, "text", keyword.c_str());
-    HandleControlCommand(cmd);
-    cJSON_Delete(cmd);
+    EnginePlayMusic(keyword);
 }
 
 void MiotClient::McpControlPlayback(const std::string& action) {
-    cJSON* cmd = cJSON_CreateObject();
-    cJSON_AddStringToObject(cmd, "type", "music_control");
-    cJSON_AddStringToObject(cmd, "action", action.c_str());
-    HandleControlCommand(cmd);
-    cJSON_Delete(cmd);
+    EngineControlMusic(action);
 }
 
 void MiotClient::McpPlayAlbum(const std::string& album) {
-    cJSON* cmd = cJSON_CreateObject();
-    cJSON_AddStringToObject(cmd, "type", "album");
-    cJSON_AddStringToObject(cmd, "album", album.c_str());
-    HandleControlCommand(cmd);
-    cJSON_Delete(cmd);
+    EnginePlayAlbum(album);
 }
 
 void MiotClient::McpPlayRadio(const std::string& station, const std::string& name) {
-    cJSON* cmd = cJSON_CreateObject();
-    cJSON_AddStringToObject(cmd, "type", "radio");
-    cJSON_AddStringToObject(cmd, "station", station.c_str());
-    if (!name.empty()) {
-        cJSON_AddStringToObject(cmd, "name", name.c_str());
-    }
-    HandleControlCommand(cmd);
-    cJSON_Delete(cmd);
+    EnginePlayRadio(station, name);
 }
 
 void MiotClient::McpPlayWeather(const std::string& city, const std::string& city_enc) {
-    cJSON* cmd = cJSON_CreateObject();
-    cJSON_AddStringToObject(cmd, "type", "weather");
-    cJSON_AddStringToObject(cmd, "city", city.c_str());
-    if (!city_enc.empty()) {
-        cJSON_AddStringToObject(cmd, "city_enc", city_enc.c_str());
-    }
-    HandleControlCommand(cmd);
-    cJSON_Delete(cmd);
+    EnginePlayWeather(city, city_enc);
 }
 
 void MiotClient::McpPlayStudy(const std::string& key, const std::string& word, bool course) {
-    cJSON* cmd = cJSON_CreateObject();
-    cJSON_AddStringToObject(cmd, "type", course ? "study_course" : "study_card");
-    if (!word.empty()) {
-        cJSON_AddStringToObject(cmd, "word", word.c_str());
-    }
-    cJSON_AddStringToObject(cmd, "key", key.c_str());
-    HandleControlCommand(cmd);
-    cJSON_Delete(cmd);
+    EnginePlayStudy(key, word, course);
 }

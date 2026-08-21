@@ -74,6 +74,16 @@ private:
     void HandleMessage(const std::string& message);
     void HandleControlCommand(const cJSON* data);
     void TriggerDanceForSong(const std::string& keyword);
+
+    // === 媒体引擎方法（MCP 与 MIOT /ws 共用，去除对命令字符串派发的依赖）===
+    // MCP 工具直接调用这些方法；HandleControlCommand 也转发到这里，保证两条链路行为一致。
+    void EnginePlayMusic(const std::string& keyword);
+    void EngineControlMusic(const std::string& action);  // play|pause|next|previous|stop
+    void EnginePlayAlbum(const std::string& album);
+    void EnginePlayRadio(const std::string& station, const std::string& name);
+    void EngineShowChat(const std::string& text);
+    void EnginePlayWeather(const std::string& city, const std::string& city_enc);
+    void EnginePlayStudy(const std::string& key, const std::string& word, bool course);
     void HandleHeartbeatResponse();
     // 专辑播放：从服务器拉取 /api/music/playlist?album= 歌单并连播。
     // 磁盘/HLS 之外均为 HTTP JSON 请求，失败时仅记录日志，不阻塞主链路。
