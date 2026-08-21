@@ -50,6 +50,10 @@ public:
 
 private:
     static constexpr const char* kServerUrl = "ws://192.168.199.162:8003/ws";
+    // Phase 4: 迁移到 MCP 为主通道后，默认关闭设备对 kServerUrl(/ws) 的主动连接。
+    // MIOT /ws 通道代码（ConnectAndServe / HandleMessage / HandleControlCommand 等）全部保留作回退，
+    // 将本开关置 true 即可恢复设备侧 /ws 连接，无需改动其他逻辑。
+    static constexpr bool kEnableMiotWs = false;
     static constexpr const char* kPlaylistApiBase = "http://192.168.199.162:8003/api/music/playlist?album=";
     static constexpr const char* kWeatherApiBase = "http://192.168.199.162:8003/api/weather_now?city=";
     static constexpr const char* kStudyImageUrlBase = "http://192.168.199.162:8003/api/study/image?key=";

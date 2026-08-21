@@ -32,6 +32,10 @@ MiotClient::MiotClient() = default;
 MiotClient::~MiotClient() { Stop(); }
 
 void MiotClient::Start() {
+    if (!kEnableMiotWs) {
+        ESP_LOGI(TAG, "MIOT /ws 通道已禁用(Phase 4)，保留代码作回退，不发起 %s 连接", kServerUrl);
+        return;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     if (running_) {
         return;
