@@ -30,7 +30,7 @@ Representative local full-build results are shown below. Firmware size and free 
 | ESP32-S3 | `lilygo-t-circle-s3` | `0x2a32f0` | 33% |
 | ESP32-S3 | `zhengchen-1.54tft-wifi` | `0x2abdc0` | 32% |
 | ESP32-S3 | `kevin-yuying-313lcd` | `0x2c4990` | 30% |
-| ESP32-S3 | `otto-robot` | `0x37ff70` | 11% |
+| ESP32-S3 | `ivy-robot` | `0x37ff70` | 11% |
 | ESP32-S3 | `esp-vocat` | `0x2742f0` | 38% |
 | ESP32-S3 | `sensecap-watcher` | `0x2faff0` | 25% |
 | ESP32-P4 v3.x | `esp-p4-function-ev-board-p4x` | `0x385420` | 11% |
@@ -187,7 +187,7 @@ In the table below, "Board" is the source directory and "Build variant" is the f
 | `esp32s3` | `movecall-cuican-esp32s3` | `movecall-cuican-esp32s3` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
 | `esp32s3` | `movecall-moji-esp32s3` | `movecall-moji-esp32s3` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
 | `esp32s3` | `nulllab-ai-vox-v3` | `nulllab-ai-vox-v3` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
-| `esp32s3` | `otto-robot` | `otto-robot` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
+| `esp32s3` | `ivy-robot` | `ivy-robot` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
 | `esp32s3` | `quandong-s3-dev` | `quandong-s3-dev` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
 | `esp32s3` | `rymcu/bigsmart` | `rymcu-bigsmart` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |
 | `esp32s3` | `sensecap-watcher` | `sensecap-watcher` | ✅ Full build passed | GitHub Actions IDF 6.0.1 full build | Hardware smoke/peripheral regression pending |

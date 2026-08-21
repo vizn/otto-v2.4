@@ -716,3 +716,61 @@ void MiotClient::ContinueCourse(const std::string& after) {
     }
     music_player_->PlayStudyCard(key);
 }
+
+// === MCP 媒体工具入口：复用既有 MIOT 处理逻辑，不复制播放代码 ===
+void MiotClient::McpPlayMusic(const std::string& keyword) {
+    cJSON* cmd = cJSON_CreateObject();
+    cJSON_AddStringToObject(cmd, "type", "music");
+    cJSON_AddStringToObject(cmd, "text", keyword.c_str());
+    HandleControlCommand(cmd);
+    cJSON_Delete(cmd);
+}
+
+void MiotClient::McpControlPlayback(const std::string& action) {
+    cJSON* cmd = cJSON_CreateObject();
+    cJSON_AddStringToObject(cmd, "type", "music_control");
+    cJSON_AddStringToObject(cmd, "action", action.c_str());
+    HandleControlCommand(cmd);
+    cJSON_Delete(cmd);
+}
+
+void MiotClient::McpPlayAlbum(const std::string& album) {
+    cJSON* cmd = cJSON_CreateObject();
+    cJSON_AddStringToObject(cmd, "type", "album");
+    cJSON_AddStringToObject(cmd, "album", album.c_str());
+    HandleControlCommand(cmd);
+    cJSON_Delete(cmd);
+}
+
+void MiotClient::McpPlayRadio(const std::string& station, const std::string& name) {
+    cJSON* cmd = cJSON_CreateObject();
+    cJSON_AddStringToObject(cmd, "type", "radio");
+    cJSON_AddStringToObject(cmd, "station", station.c_str());
+    if (!name.empty()) {
+        cJSON_AddStringToObject(cmd, "name", name.c_str());
+    }
+    HandleControlCommand(cmd);
+    cJSON_Delete(cmd);
+}
+
+void MiotClient::McpPlayWeather(const std::string& city, const std::string& city_enc) {
+    cJSON* cmd = cJSON_CreateObject();
+    cJSON_AddStringToObject(cmd, "type", "weather");
+    cJSON_AddStringToObject(cmd, "city", city.c_str());
+    if (!city_enc.empty()) {
+        cJSON_AddStringToObject(cmd, "city_enc", city_enc.c_str());
+    }
+    HandleControlCommand(cmd);
+    cJSON_Delete(cmd);
+}
+
+void MiotClient::McpPlayStudy(const std::string& key, const std::string& word, bool course) {
+    cJSON* cmd = cJSON_CreateObject();
+    cJSON_AddStringToObject(cmd, "type", course ? "study_course" : "study_card");
+    if (!word.empty()) {
+        cJSON_AddStringToObject(cmd, "word", word.c_str());
+    }
+    cJSON_AddStringToObject(cmd, "key", key.c_str());
+    HandleControlCommand(cmd);
+    cJSON_Delete(cmd);
+}

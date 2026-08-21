@@ -2,7 +2,7 @@
     "target": "esp32s3",
     "builds": [
         {
-            "name": "otto-robot-v1",
+            "name": "ivy-robot-v1",
             "sdkconfig_append": [
                 "CONFIG_HTTPD_WS_SUPPORT=y",
                 "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y",

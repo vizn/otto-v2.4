@@ -2,7 +2,7 @@
     "target": "esp32s3",
     "builds": [
         {
-            "name": "otto-robot",
+            "name": "ivy-robot",
             "sdkconfig_append": [
                 "CONFIG_HTTPD_WS_SUPPORT=y",
                 "CONFIG_CAMERA_OV2640=y",

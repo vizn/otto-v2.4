@@ -564,7 +564,7 @@ public:
         ESP_LOGI(TAG, "开始注册MCP工具...");
 
         // 统一动作工具（除了舵机序列外的所有动作）
-        mcp_server.AddTool("self.otto.action",
+        mcp_server.AddTool("self.ivy.action",
                            "执行机器人动作。action: 动作名称；根据动作类型提供相应参数：direction: 方向，1=前进/左转，-1=后退/右转；0=左右同时"
                            "steps: 动作步数，1-100；speed: 动作速度，100-3000，数值越小越快；amount: 动作幅度，0-170；arm_swing: 手臂摆动幅度，0-170；"
                            "基础动作：walk(行走，需steps/speed/direction/arm_swing)、turn(转身，需steps/speed/direction/arm_swing)、jump(跳跃，需steps/speed)、"
@@ -710,7 +710,7 @@ public:
 
         // 舵机序列工具（支持分段发送，每次发送一个序列，自动排队执行）
         mcp_server.AddTool(
-            "self.otto.servo_sequences",
+            "self.ivy.servo_sequences",
             "AI自定义动作编程（即兴动作）。支持分段发送序列：超过5个序列建议AI可以连续多次调用此工具，每次发送一个短序列，系统会自动排队按顺序执行。支持普通移动和振荡器两种模式。"
             "机器人结构：双手可上下摆动，双腿可内收外展，双脚可上下翻转。"
             "舵机说明："
@@ -726,12 +726,12 @@ public:
             "普通模式：'s'舵机位置对象(键名：ll/rl/lf/rf/lh/rh，值：0-180度)，'v'移动速度100-3000毫秒(默认1000)，'d'动作后延迟毫秒数(默认0)；"
             "振荡模式：'osc'振荡器对象，包含'a'振幅对象(各舵机振幅10-90度，默认20度)，'o'中心角度对象(各舵机振荡中心绝对角度0-180度，默认90度)，'ph'相位差对象(各舵机相位差，度，0-360度，默认0度)，'p'周期100-3000毫秒(默认500)，'c'周期数0.1-20.0(默认5.0)；"
             "使用方式：AI可以连续多次调用此工具，每次发送一个序列，系统会自动排队按顺序执行。"
-            "重要说明：左右腿脚震荡的时候，有一只脚必须在90度，否则会损坏机器人，如果发送多个序列（序列数>1），完成所有序列后需要复位时，AI应该最后单独调用self.otto.home工具进行复位，不要在序列中设置复位参数。"
+            "重要说明：左右腿脚震荡的时候，有一只脚必须在90度，否则会损坏机器人，如果发送多个序列（序列数>1），完成所有序列后需要复位时，AI应该最后单独调用self.ivy.home工具进行复位，不要在序列中设置复位参数。"
             "普通模式示例：发送3个序列，最后调用复位："
             "第1次调用{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":100},\\\"v\\\":1000}],\\\"d\\\":500}\"}，"
             "第2次调用{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":90},\\\"v\\\":800}],\\\"d\\\":500}\"}，"
             "第3次调用{\"sequence\":\"{\\\"a\\\":[{\\\"s\\\":{\\\"ll\\\":80},\\\"v\\\":800}]}\"}，"
-            "最后调用self.otto.home工具进行复位。"
+            "最后调用self.ivy.home工具进行复位。"
             "振荡器模式示例："
             "示例1-双臂同步摆动：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"lh\\\":30,\\\"rh\\\":30},\\\"o\\\":{\\\"lh\\\":90,\\\"rh\\\":-90},\\\"p\\\":500,\\\"c\\\":5.0}}],\\\"d\\\":0}\"}；"
             "示例2-双腿交替振荡（波浪效果）：{\"sequence\":\"{\\\"a\\\":[{\\\"osc\\\":{\\\"a\\\":{\\\"ll\\\":20,\\\"rl\\\":20},\\\"o\\\":{\\\"ll\\\":90,\\\"rl\\\":-90},\\\"ph\\\":{\\\"rl\\\":180},\\\"p\\\":600,\\\"c\\\":3.0}}],\\\"d\\\":0}\"}；"
@@ -749,14 +749,14 @@ public:
             });
 
 
-        mcp_server.AddTool("self.otto.stop", "立即停止所有动作并复位", PropertyList(),
+        mcp_server.AddTool("self.ivy.stop", "立即停止所有动作并复位", PropertyList(),
                            [this](const PropertyList& properties) -> ReturnValue {
                                StopAll();
                                return true;
                            });
 
         mcp_server.AddTool(
-            "self.otto.set_trim",
+            "self.ivy.set_trim",
             "校准单个舵机位置。设置指定舵机的微调参数以调整机器人的初始站立姿态，设置将永久保存。"
             "servo_type: 舵机类型(left_leg/right_leg/left_foot/right_foot/left_hand/right_hand); "
             "trim_value: 微调值(-50到50度)",
@@ -815,7 +815,7 @@ public:
                        " 度，已永久保存";
             });
 
-        mcp_server.AddTool("self.otto.get_trims", "获取当前的舵机微调设置", PropertyList(),
+        mcp_server.AddTool("self.ivy.get_trims", "获取当前的舵机微调设置", PropertyList(),
                            [this](const PropertyList& properties) -> ReturnValue {
                                Settings settings("otto_trims", false);
 
@@ -838,7 +838,7 @@ public:
                                return result;
                            });
 
-        mcp_server.AddTool("self.otto.get_status", "获取机器人状态，返回 moving 或 idle",
+        mcp_server.AddTool("self.ivy.get_status", "获取机器人状态，返回 moving 或 idle",
                            PropertyList(), [this](const PropertyList& properties) -> ReturnValue {
                                return is_action_in_progress_ ? "moving" : "idle";
                            });
@@ -857,7 +857,7 @@ public:
                                return status;
                            });
                            
-        mcp_server.AddTool("self.otto.get_ip", "获取机器人WiFi IP地址", PropertyList(),
+        mcp_server.AddTool("self.ivy.get_ip", "获取机器人WiFi IP地址", PropertyList(),
                            [](const PropertyList& properties) -> ReturnValue {
                                auto& wifi = WifiManager::GetInstance();
                                std::string ip = wifi.GetIpAddress();

@@ -150,6 +150,110 @@ private:
         ESP_LOGI(TAG, "MIOT client started");
     }
 
+    void RegisterIvyMediaTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool("self.ivy.play_music",
+            "播放音乐。keyword: 歌曲/歌手/歌词片段关键词；dance=true 时同步触发连续舞蹈。",
+            PropertyList({Property("keyword", kPropertyTypeString, ""),
+                          Property("dance", kPropertyTypeBoolean, false)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string keyword = properties["keyword"].value<std::string>();
+                bool dance = properties["dance"].value<bool>();
+                if (keyword.empty()) return "缺少 keyword 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayMusic(keyword);
+                if (dance && music_player_ != nullptr) OttoControllerQueueContinuousDance();
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.control_playback",
+            "播放控制。action: play(继续)/pause(暂停)/next(下一首)/previous(上一首)/stop(停止)。",
+            PropertyList({Property("action", kPropertyTypeString, "play")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string action = properties["action"].value<std::string>();
+                if (miot_client_ != nullptr) miot_client_->McpControlPlayback(action);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.play_album",
+            "播放专辑。album: 专辑名，从服务器拉取歌单连播。",
+            PropertyList({Property("album", kPropertyTypeString, "")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string album = properties["album"].value<std::string>();
+                if (album.empty()) return "缺少 album 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayAlbum(album);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.play_radio",
+            "播放电台。station: 电台标识(如 qtfm-dszs)；name: 可选显示名。",
+            PropertyList({Property("station", kPropertyTypeString, ""),
+                          Property("name", kPropertyTypeString, "")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string station = properties["station"].value<std::string>();
+                std::string name = properties["name"].value<std::string>();
+                if (station.empty()) return "缺少 station 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayRadio(station, name);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.show_weather",
+            "天气播报。city: 城市名(如 北京)；city_enc: 可选 URL 编码(缺省自动编码)。",
+            PropertyList({Property("city", kPropertyTypeString, ""),
+                          Property("city_enc", kPropertyTypeString, "")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string city = properties["city"].value<std::string>();
+                std::string city_enc = properties["city_enc"].value<std::string>();
+                if (city.empty()) return "缺少 city 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayWeather(city, city_enc);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.play_course",
+            "学习卡片/课程。key: 课程卡片 key；word: 可选显示词；course=true 为课程连播。",
+            PropertyList({Property("key", kPropertyTypeString, ""),
+                          Property("word", kPropertyTypeString, ""),
+                          Property("course", kPropertyTypeBoolean, false)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string key = properties["key"].value<std::string>();
+                std::string word = properties["word"].value<std::string>();
+                bool course = properties["course"].value<bool>();
+                if (key.empty()) return "缺少 key 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayStudy(key, word, course);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.show_message",
+            "在屏幕上显示文本消息。",
+            PropertyList({Property("text", kPropertyTypeString, "")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string text = properties["text"].value<std::string>();
+                if (!text.empty() && music_player_ != nullptr) music_player_->ShowMessage(text);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.media_status",
+            "查询当前媒体播放状态。",
+            PropertyList(),
+            [this](const PropertyList& properties) -> ReturnValue {
+                cJSON* status = cJSON_CreateObject();
+                if (music_player_ == nullptr) {
+                    cJSON_AddBoolToObject(status, "playing", false);
+                    cJSON_AddBoolToObject(status, "paused", false);
+                } else {
+                    cJSON_AddBoolToObject(status, "playing", music_player_->IsPlaying());
+                    cJSON_AddBoolToObject(status, "paused", music_player_->IsPaused());
+                }
+                char* s = cJSON_PrintUnformatted(status);
+                std::string result(s);
+                free(s);
+                cJSON_Delete(status);
+                return result;
+            });
+
+        ESP_LOGI(TAG, "MCP 媒体工具(self.ivy.*)注册完成");
+    }
+
     void InitializeAudioCodec() {
         if (hw_config_.audio_use_simplex) {
             audio_codec_ = new NoAudioCodecSimplex(
@@ -192,6 +296,7 @@ public:
         InitializeAudioCodec();
 
         InitializeOttoController();
+        RegisterIvyMediaTools();
         ws_control_server_ = nullptr;
         GetBacklight()->RestoreBrightness();
     }

@@ -2,7 +2,7 @@
   <img width="80%" align="center" src="../../../docs/V1/otto-robot.png"alt="logo">
 </p>
   <h1 align="center">
-  ottoRobot
+  ivyRobot
 </h1>
 
 ## 简介
@@ -57,11 +57,11 @@ otto 机器人具有丰富的动作能力，包括行走、转向、跳跃、摇
 
 ### 动作
 
-所有动作通过统一的 `self.otto.action` 工具调用，通过 `action` 参数指定动作名称。
+所有动作通过统一的 `self.ivy.action` 工具调用，通过 `action` 参数指定动作名称。
 
 | MCP工具名称 | 描述 | 参数说明 |
 |-----------|------|---------|
-| self.otto.action | 执行机器人动作 | **action**: 动作名称（必填）<br>**steps**: 动作步数(1-100，默认3)<br>**speed**: 动作速度(100-3000，数值越小越快，默认700)<br>**direction**: 方向参数(1/-1/0，默认1，根据动作类型不同含义不同)<br>**amount**: 动作幅度(0-170，默认30)<br>**arm_swing**: 手臂摆动幅度(0-170，默认50) |
+| self.ivy.action | 执行机器人动作 | **action**: 动作名称（必填）<br>**steps**: 动作步数(1-100，默认3)<br>**speed**: 动作速度(100-3000，数值越小越快，默认700)<br>**direction**: 方向参数(1/-1/0，默认1，根据动作类型不同含义不同)<br>**amount**: 动作幅度(0-170，默认30)<br>**arm_swing**: 手臂摆动幅度(0-170，默认50) |
 
 #### 支持的动作列表
 
@@ -101,19 +101,19 @@ otto 机器人具有丰富的动作能力，包括行走、转向、跳跃、摇
 
 | MCP工具名称         | 描述             | 返回值/说明                                              |
 |-------------------|-----------------|---------------------------------------------------|
-| self.otto.stop    | 立即停止所有动作并复位 | 停止当前动作并回到初始位置 |
-| self.otto.get_status | 获取机器人状态 | 返回 "moving" 或 "idle" |
-| self.otto.set_trim | 校准单个舵机位置 | **servo_type**: 舵机类型(left_leg/right_leg/left_foot/right_foot/left_hand/right_hand)<br>**trim_value**: 微调值(-50到50度) |
-| self.otto.get_trims | 获取当前的舵机微调设置 | 返回所有舵机微调值的JSON格式 |
-| self.otto.get_ip | 获取机器人WiFi IP地址 | 返回IP地址和连接状态的JSON格式：`{"ip":"192.168.x.x","connected":true}` 或 `{"ip":"","connected":false}` |
+| self.ivy.stop    | 立即停止所有动作并复位 | 停止当前动作并回到初始位置 |
+| self.ivy.get_status | 获取机器人状态 | 返回 "moving" 或 "idle" |
+| self.ivy.set_trim | 校准单个舵机位置 | **servo_type**: 舵机类型(left_leg/right_leg/left_foot/right_foot/left_hand/right_hand)<br>**trim_value**: 微调值(-50到50度) |
+| self.ivy.get_trims | 获取当前的舵机微调设置 | 返回所有舵机微调值的JSON格式 |
+| self.ivy.get_ip | 获取机器人WiFi IP地址 | 返回IP地址和连接状态的JSON格式：`{"ip":"192.168.x.x","connected":true}` 或 `{"ip":"","connected":false}` |
 | self.battery.get_level | 获取电池状态  | 返回电量百分比和充电状态的JSON格式 |
-| self.otto.servo_sequences | 舵机序列自编程 | 支持分段发送序列，支持普通移动和振荡器两种模式。详见代码注释中的详细说明 |
+| self.ivy.servo_sequences | 舵机序列自编程 | 支持分段发送序列，支持普通移动和振荡器两种模式。详见代码注释中的详细说明 |
 
-**注**: `home`（复位）动作通过 `self.otto.action` 工具调用，参数为 `{"action": "home"}`。
+**注**: `home`（复位）动作通过 `self.ivy.action` 工具调用，参数为 `{"action": "home"}`。
 
 ### 参数说明
 
-`self.otto.action` 工具的参数说明：
+`self.ivy.action` 工具的参数说明：
 
 1. **action** (必填): 动作名称，支持的动作见上方"支持的动作列表"
 2. **steps**: 动作执行的步数/次数(1-100，默认3)，数值越大动作持续时间越长
@@ -138,49 +138,49 @@ otto 机器人具有丰富的动作能力，包括行走、转向、跳跃、摇
 ### MCP工具调用示例
 ```json
 // 向前走3步（使用默认参数）
-{"name": "self.otto.action", "arguments": {"action": "walk"}}
+{"name": "self.ivy.action", "arguments": {"action": "walk"}}
 
 // 向前走5步，稍快一些
-{"name": "self.otto.action", "arguments": {"action": "walk", "steps": 5, "speed": 800}}
+{"name": "self.ivy.action", "arguments": {"action": "walk", "steps": 5, "speed": 800}}
 
 // 左转2步，大幅度摆动手臂
-{"name": "self.otto.action", "arguments": {"action": "turn", "steps": 2, "arm_swing": 100}}
+{"name": "self.ivy.action", "arguments": {"action": "turn", "steps": 2, "arm_swing": 100}}
 
 // 摇摆舞蹈，中等幅度
-{"name": "self.otto.action", "arguments": {"action": "swing", "steps": 5, "amount": 50}}
+{"name": "self.ivy.action", "arguments": {"action": "swing", "steps": 5, "amount": 50}}
 
 // 跳跃
-{"name": "self.otto.action", "arguments": {"action": "jump", "steps": 1, "speed": 1000}}
+{"name": "self.ivy.action", "arguments": {"action": "jump", "steps": 1, "speed": 1000}}
 
 // 太空步
-{"name": "self.otto.action", "arguments": {"action": "moonwalk", "steps": 3, "speed": 800, "direction": 1, "amount": 30}}
+{"name": "self.ivy.action", "arguments": {"action": "moonwalk", "steps": 3, "speed": 800, "direction": 1, "amount": 30}}
 
 // 挥左手打招呼
-{"name": "self.otto.action", "arguments": {"action": "hand_wave", "direction": 1}}
+{"name": "self.ivy.action", "arguments": {"action": "hand_wave", "direction": 1}}
 
 // 展示动作（串联多个动作）
-{"name": "self.otto.action", "arguments": {"action": "showcase"}}
+{"name": "self.ivy.action", "arguments": {"action": "showcase"}}
 
 // 坐下
-{"name": "self.otto.action", "arguments": {"action": "sit"}}
+{"name": "self.ivy.action", "arguments": {"action": "sit"}}
 
 // 大风车动作
-{"name": "self.otto.action", "arguments": {"action": "windmill", "steps": 10, "speed": 500, "amount": 80}}
+{"name": "self.ivy.action", "arguments": {"action": "windmill", "steps": 10, "speed": 500, "amount": 80}}
 
 // 起飞动作
-{"name": "self.otto.action", "arguments": {"action": "takeoff", "steps": 5, "speed": 300, "amount": 40}}
+{"name": "self.ivy.action", "arguments": {"action": "takeoff", "steps": 5, "speed": 300, "amount": 40}}
 
 // 广播体操
-{"name": "self.otto.action", "arguments": {"action": "radio_calisthenics"}}
+{"name": "self.ivy.action", "arguments": {"action": "radio_calisthenics"}}
 
 // 复位到初始位置
-{"name": "self.otto.action", "arguments": {"action": "home"}}
+{"name": "self.ivy.action", "arguments": {"action": "home"}}
 
 // 立即停止所有动作并复位
-{"name": "self.otto.stop", "arguments": {}}
+{"name": "self.ivy.stop", "arguments": {}}
 
 // 获取机器人IP地址
-{"name": "self.otto.get_ip", "arguments": {}}
+{"name": "self.ivy.get_ip", "arguments": {}}
 ```
 
 ### 语音指令示例
@@ -245,13 +245,13 @@ Otto 机器人内置 WebSocket 服务器，可在局域网内直接调试，无�
 #### 获取舵机微调值
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.get_trims","arguments":{}},"id":3}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.get_trims","arguments":{}},"id":3}
 ```
 
 #### 设置单个舵机微调（永久保存）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.set_trim","arguments":{"servo_type":"left_leg","trim_value":5}},"id":4}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.set_trim","arguments":{"servo_type":"left_leg","trim_value":5}},"id":4}
 ```
 
 `servo_type` 可选值：`left_leg` / `right_leg` / `left_foot` / `right_foot` / `left_hand` / `right_hand`，`trim_value` 范围 `-50` ~ `50`
@@ -259,85 +259,85 @@ Otto 机器人内置 WebSocket 服务器，可在局域网内直接调试，无�
 #### 行走（前进3步）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"walk","steps":3,"speed":700,"direction":1}},"id":5}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"walk","steps":3,"speed":700,"direction":1}},"id":5}
 ```
 
 #### 后退
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"walk","steps":3,"speed":700,"direction":-1}},"id":6}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"walk","steps":3,"speed":700,"direction":-1}},"id":6}
 ```
 
 #### 左转
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"turn","steps":3,"speed":700,"direction":-1}},"id":7}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"turn","steps":3,"speed":700,"direction":-1}},"id":7}
 ```
 
 #### 跳跃
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"jump","steps":1,"speed":500}},"id":8}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"jump","steps":1,"speed":500}},"id":8}
 ```
 
 #### 摇摆
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"swing","steps":5,"speed":600,"amount":30}},"id":9}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"swing","steps":5,"speed":600,"amount":30}},"id":9}
 ```
 
 #### 太空步
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"moonwalk","steps":3,"speed":800,"direction":1,"amount":30}},"id":10}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"moonwalk","steps":3,"speed":800,"direction":1,"amount":30}},"id":10}
 ```
 
 #### 坐下
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"sit"}},"id":11}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"sit"}},"id":11}
 ```
 
 #### 复位
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"home"}},"id":12}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"home"}},"id":12}
 ```
 
 #### 展示动作
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"showcase"}},"id":13}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"showcase"}},"id":13}
 ```
 
 #### 举手（需手部舵机）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"hands_up","speed":500,"direction":1}},"id":14}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"hands_up","speed":500,"direction":1}},"id":14}
 ```
 
 #### 挥手（需手部舵机）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.action","arguments":{"action":"hand_wave","direction":1}},"id":15}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.action","arguments":{"action":"hand_wave","direction":1}},"id":15}
 ```
 
 #### 立即停止所有动作
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.stop","arguments":{}},"id":16}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.stop","arguments":{}},"id":16}
 ```
 
 #### 获取运动状态（返回 `"moving"` 或 `"idle"`）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.get_status","arguments":{}},"id":17}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.get_status","arguments":{}},"id":17}
 ```
 
 #### 获取 IP 地址
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.get_ip","arguments":{}},"id":18}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.get_ip","arguments":{}},"id":18}
 ```
 
 #### 获取电池电量
@@ -375,19 +375,19 @@ Otto 机器人内置 WebSocket 服务器，可在局域网内直接调试，无�
 #### 普通移动模式（逐步移动各舵机）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.servo_sequences","arguments":{"sequence":"{\"a\":[{\"s\":{\"ll\":110,\"rl\":70},\"v\":800},{\"s\":{\"ll\":90,\"rl\":90},\"v\":800}],\"d\":0}"}},"id":23}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.servo_sequences","arguments":{"sequence":"{\"a\":[{\"s\":{\"ll\":110,\"rl\":70},\"v\":800},{\"s\":{\"ll\":90,\"rl\":90},\"v\":800}],\"d\":0}"}},"id":23}
 ```
 
 #### 振荡器模式（双臂摆动）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.servo_sequences","arguments":{"sequence":"{\"a\":[{\"osc\":{\"a\":{\"lh\":30,\"rh\":30},\"o\":{\"lh\":90,\"rh\":90},\"ph\":{\"rh\":180},\"p\":500,\"c\":5.0}}]}"}},"id":24}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.servo_sequences","arguments":{"sequence":"{\"a\":[{\"osc\":{\"a\":{\"lh\":30,\"rh\":30},\"o\":{\"lh\":90,\"rh\":90},\"ph\":{\"rh\":180},\"p\":500,\"c\":5.0}}]}"}},"id":24}
 ```
 
 #### 振荡器模式（左右摇摆波浪）
 
 ```json
-{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.otto.servo_sequences","arguments":{"sequence":"{\"a\":[{\"osc\":{\"a\":{\"ll\":20,\"rl\":20},\"o\":{\"ll\":90,\"rl\":90},\"ph\":{\"rl\":180},\"p\":600,\"c\":5.0}}]}"}},"id":25}
+{"jsonrpc":"2.0","method":"tools/call","params":{"name":"self.ivy.servo_sequences","arguments":{"sequence":"{\"a\":[{\"osc\":{\"a\":{\"ll\":20,\"rl\":20},\"o\":{\"ll\":90,\"rl\":90},\"ph\":{\"rl\":180},\"p\":600,\"c\":5.0}}]}"}},"id":25}
 ```
 
 **序列舵机键名说明：**

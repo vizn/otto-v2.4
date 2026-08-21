@@ -50,6 +50,7 @@ public:
 
     void SetAudioCodec(AudioCodec* codec) { codec_ = codec; }
     bool IsPlaying() const { return playing_; }
+    bool IsPaused() const { return paused_; }
     // 播放结束（自然播完或被停止）时回调，用于结束跟随音乐的舞蹈等联动
     void SetOnStoppedCallback(std::function<void()> cb) { on_stopped_ = std::move(cb); }
 

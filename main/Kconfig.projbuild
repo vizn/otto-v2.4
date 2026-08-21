@@ -558,11 +558,11 @@ choice BOARD_TYPE
     config BOARD_TYPE_SPOTPEAR_ESP32_S3_1_28_BOX
         bool "Spotpear ESP32-S3-1.28-BOX"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_OTTO_ROBOT
-        bool "ottoRobot"
+    config BOARD_TYPE_IVY_ROBOT
+        bool "ivyRobot"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_OTTO_ROBOT_V1
-        bool "ottoRobot V1"
+    config BOARD_TYPE_IVY_ROBOT_V1
+        bool "ivyRobot V1"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_ELECTRON_BOT
         bool "electronBot"

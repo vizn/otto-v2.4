@@ -1,6 +1,6 @@
-# otto-robot-v1 定制功能说明
+# ivy-robot-v1 定制功能说明
 
-本文档记录 otto-robot-v1 开发板上已完成的自定义功能，包括固件改动与服务器端功能。
+本文档记录 ivy-robot-v1 开发板上已完成的自定义功能，包括固件改动与服务器端功能。
 
 ## 固件改动
 
@@ -29,11 +29,11 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 **背景**：当后端正在播放 TTS 语音时，若用户说出唤醒词，旧逻辑会把唤醒检测也当作 AFE 唤醒，导致播放被异常打断。修复后仅 WakeNet 检测器触发唤醒。
 
-**构建产物**：`releases/v2.4.3_otto-robot-v1.zip`（约 3.6MB），已通过 USB 刷入 `/dev/ttyACM0`，全部 Hash verified。
+**构建产物**：`releases/v2.4.3_ivy-robot-v1.zip`（约 3.6MB），已通过 USB 刷入 `/dev/ttyACM0`，全部 Hash verified。
 
 ### 3. 英文舞蹈指令识别
 
-修改 `main/boards/otto-robot-v1/miot_client.cc`，当服务器通过 MIOT 下发歌曲时，同步检查用户原话（STT 原文）是否含舞蹈意图关键词。
+修改 `main/boards/ivy-robot-v1/miot_client.cc`，当服务器通过 MIOT 下发歌曲时，同步检查用户原话（STT 原文）是否含舞蹈意图关键词。
 
 新增英文关键词匹配（大小写不敏感）：
 
@@ -48,7 +48,7 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 ### 4. 连续舞蹈动作编排
 
-修改 `main/boards/otto-robot-v1/otto_controller.cc`，新增 `DanceMove` 结构体和 `QueueNextContinuousDanceStep()` 方法，将单一 SafeGroove 律动替换为多动作轮播编排。
+修改 `main/boards/ivy-robot-v1/otto_controller.cc`，新增 `DanceMove` 结构体和 `QueueNextContinuousDanceStep()` 方法，将单一 SafeGroove 律动替换为多动作轮播编排。
 
 编排序列（共 21 个条目，循环播放）：
 
@@ -202,7 +202,7 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 | `web_search` | 联网搜索 | 启用 |
 | `get_weather` / `show_weather` | 天气查询 | 启用 |
 | `get_news_from_newsnow` | NewsNow 新闻 | 启用 |
-| `call_device` | 桥接层：把 LLM 调用转发到固件侧 MCP 工具（`self.otto.*` 等经此下去） | 基础设施 |
+| `call_device` | 桥接层：把 LLM 调用转发到固件侧 MCP 工具（`self.ivy.*` 等经此下去） | 基础设施 |
 | `change_role` | 切换角色 | 未启用 |
 | `get_news_from_chinanews` | 中新网新闻 | 未启用 |
 | `get_time` | 获取时间 | 未启用 |
@@ -211,6 +211,48 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 | `play_radio` | 播放电台 | 未启用 |
 | `search_from_ragflow` | RAGFlow 知识库检索 | 未启用 |
 | `xiaozhi_push` | 推送消息到设备 | 未启用 |
+
+## MIOT → MCP 迁移（设备侧，已完成 Phase 1）
+
+把本板私有 MIOT 能力以 `self.ivy.*` MCP 工具形式暴露，使服务端/LLM 可直接通过 MCP 调用，
+最终逐步替代现有 MIOT 下发路径（增量、不破坏现有 MIOT）。
+
+### 设计
+
+- 复用既有逻辑：在 `miot_client.cc` 新增一组薄封装 `McpPlayMusic / McpControlPlayback /
+  McpPlayAlbum / McpPlayRadio / McpPlayWeather / McpPlayStudy`，每个方法仅构造与服务器下发
+  MIOT 指令**完全相同**的 JSON（`{"type":"music","text":...}` 等），再调用既有
+  `HandleControlCommand`，因此 MIOT 与 MCP 行为完全一致，零逻辑复制。
+- 工具注册：在 `otto_robot.cc` 的 `OttoRobot` 构造函数（网络连通前）调用
+  `RegisterIvyMediaTools()`，经 `McpServer::GetInstance().AddTool(...)` 注册 8 个工具；
+  回调捕获 `this`，调用时再空指针判定 `music_player_`/`miot_client_`（连接后才创建）。
+- 命名空间沿用 `self.ivy.*`（与动作工具 `self.ivy.action` 等同属 Ivy 板能力）。
+
+### 工具映射（MIOT 功能 → MCP 工具）
+
+| MCP 工具 | 对应 MIOT | 说明 |
+|---|---|---|
+| `self.ivy.play_music(keyword, dance)` | `music` | 点播；`dance=true` 额外触发连续舞蹈 |
+| `self.ivy.control_playback(action)` | `music_control` | play/pause/next/previous/stop |
+| `self.ivy.play_album(album)` | `album` | 拉取歌单连播 |
+| `self.ivy.play_radio(station, name)` | `radio` | 电台 |
+| `self.ivy.show_weather(city, city_enc)` | `weather` | 天气播报（上屏+EdgeTTS） |
+| `self.ivy.play_course(key, word, course)` | `study_card`/`study_course` | 学习卡片/课程连播 |
+| `self.ivy.show_message(text)` | `chat` | 屏幕文本 |
+| `self.ivy.media_status()` | — | 查询 playing/paused |
+
+### 验证（2026-08-21 固件）
+
+- 构建通过（ESP-IDF v6.0.2），烧录 `ivy-robot-v1` 后启动日志确认 8 个 `self.ivy.*` 媒体工具
+  全部注册（`MCP 媒体工具(self.ivy.*)注册完成`），无 error/panic；
+  `MiotClient` 连接 `ws://192.168.199.162:8003/ws` 正常、`Hey Ivy` 唤醒词正常。
+- 工具回调复用 MIOT 既有代码路径，行为与 MIOT 下发等价。
+
+### 后续阶段（未做，需决策）
+
+- **Phase 2（服务端切换）**：将服务端 `play_music.py` 等从 `miot_gateway.send_device_command`
+  改为调用本板 `self.ivy.*` MCP 工具；需服务端适配且不影响现有 MIOT 路径灰度。
+- **Phase 3（退役 MIOT）**：确认 MCP 路径稳定后，移除 `miot_client.*`，仅保留 MCP 媒体能力。
 
 ## 固件语言能力调研（后续方向）
 
@@ -254,7 +296,7 @@ idf.py -p /dev/ttyACM0 flash
 
 ## 上游同步基线（2026-08-20）
 
-otto-robot-v1 与上游 `78/xiaozhi-esp32` 的关系已通过 3-way 比对确认（基线 commit `361ab01` 的板子文件作为共同祖先，对比上游 tag `v2.4.2`）。
+ivy-robot-v1 与上游 `78/xiaozhi-esp32` 的关系已通过 3-way 比对确认（基线 commit `361ab01` 的板子文件作为共同祖先，对比上游 tag `v2.4.2`）。
 
 结论：**本板代码已与上游 v2.4.2 基本对齐，无需功能性合并**。差异仅分为两类，均为有意为之：
 

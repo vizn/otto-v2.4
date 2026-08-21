@@ -371,9 +371,11 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                                                 : kStreamUrlBase;
 
     while (restart && running_ && !stop_requested_) {
-        restart = false;
-        std::string url = url_base + UrlEncode(keyword_to_play);
-        const char* mode_str = (mode == StreamMode::kMusic) ? "music"
+            restart = false;
+            std::string url = url_base + UrlEncode(keyword_to_play);
+            // 携带设备 MAC，便于服务端回传真实歌名（修正 random/模糊匹配导致的屏显不一致）
+            url += "&mac=" + UrlEncode(SystemInfo::GetMacAddress());
+            const char* mode_str = (mode == StreamMode::kMusic) ? "music"
                                : (mode == StreamMode::kRadio) ? "radio"
                                : (mode == StreamMode::kStudy) ? "study" : "weather";
         ESP_LOGI(TAG, "Playing stream (%s): %s", mode_str, keyword_to_play.c_str());
@@ -422,6 +424,15 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
 
         playing_ = true;
         paused_ = false;
+
+        // 音乐/电台播放时，屏幕仅显示当前歌名（歌词需服务端另行提供）。
+        // random/空关键词由服务端回传真实歌名，避免屏显出现 "random"。
+        if (mode == StreamMode::kMusic || mode == StreamMode::kRadio) {
+            std::string disp = DisplaySongName(keyword_to_play);
+            if (!disp.empty() && disp != "random") {
+                ShowMessageOnScreen(disp.c_str());
+            }
+        }
 
         char chunk[kReadChunk];
         int read_result;

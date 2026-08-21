@@ -32,6 +32,15 @@ public:
     void Stop();
     void SetMusicPlayer(MusicPlayer* player) { music_player_ = player; }
 
+    // === MCP 媒体工具入口：以与服务器下发 MIOT 指令完全相同的 JSON 触发既有处理逻辑 ===
+    // 复用 HandleControlCommand，不复制播放逻辑，保证 MIOT 与 MCP 行为一致。
+    void McpPlayMusic(const std::string& keyword);
+    void McpControlPlayback(const std::string& action);  // play|pause|next|previous|stop
+    void McpPlayAlbum(const std::string& album);
+    void McpPlayRadio(const std::string& station, const std::string& name = "");
+    void McpPlayWeather(const std::string& city, const std::string& city_enc = "");
+    void McpPlayStudy(const std::string& key, const std::string& word = "", bool course = false);
+
     // 主动断开当前连接并重连（模拟自动下线），用于音乐播放结束后重置唤醒状态
     void RequestReconnect();
 
