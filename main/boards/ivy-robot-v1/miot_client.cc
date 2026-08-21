@@ -346,8 +346,9 @@ void MiotClient::EnginePlayWeather(const std::string& city, const std::string& c
     if (!weather_text.empty()) {
         music_player_->ShowMessage(weather_text);
     }
-    // 再播放服务器 EdgeTTS 合成的天气播报音频
-    music_player_->PlayWeather(city_enc);
+    // 再播放服务器 EdgeTTS 合成的天气播报音频；city_enc 缺省时用 city 做 URL 编码兜底
+    std::string enc = city_enc.empty() ? UrlEncode(city) : city_enc;
+    music_player_->PlayWeather(enc);
 }
 
 void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word, bool course) {
