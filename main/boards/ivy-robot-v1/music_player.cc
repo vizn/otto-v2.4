@@ -269,13 +269,28 @@ void MusicPlayer::PlayPlaylistInternal(std::vector<std::string> playlist) {
     NotifyStopped();
 }
 
-// 屏幕显示用歌曲名：去掉专辑路径与扩展名。
+// 屏幕显示用歌曲名：去掉专辑路径、扩展名与曲序前缀（如 "64. " / "3.音频-"）。
 std::string MusicPlayer::DisplaySongName(const std::string& keyword) {
     size_t slash = keyword.find_last_of('/');
     std::string base = (slash == std::string::npos) ? keyword : keyword.substr(slash + 1);
     size_t dot = base.find_last_of('.');
     if (dot != std::string::npos) {
         base = base.substr(0, dot);
+    }
+    // 去除开头的曲序前缀：连续数字 + '.'（可选尾随空格），如 "64. " / "3.音频-"
+    size_t i = 0;
+    while (i < base.size() && std::isdigit(static_cast<unsigned char>(base[i]))) {
+        i++;
+    }
+    if (i > 0 && i < base.size() && base[i] == '.') {
+        base = base.substr(i + 1);
+        size_t j = 0;
+        while (j < base.size() && base[j] == ' ') {
+            j++;
+        }
+        if (j > 0) {
+            base = base.substr(j);
+        }
     }
     return base;
 }

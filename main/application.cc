@@ -116,14 +116,14 @@ void Application::Initialize() {
                     std::string msg = Lang::Strings::CONNECT_TO;
                     msg += data;
                     msg += "...";
-                    display->ShowNotification(msg.c_str(), 30000);
+                    display->ShowNotification(msg.c_str(), 10000);
                 }
                 break;
             }
             case NetworkEvent::Connected: {
                 std::string msg = Lang::Strings::CONNECTED_TO;
                 msg += data;
-                display->ShowNotification(msg.c_str(), 30000);
+                display->ShowNotification(msg.c_str(), 10000);
                 xEventGroupSetBits(event_group_, MAIN_EVENT_NETWORK_CONNECTED);
                 break;
             }
@@ -326,8 +326,6 @@ void Application::HandleActivationDoneEvent() {
     has_server_time_ = ota_->HasServerTime();
 
     auto display = Board::GetInstance().GetDisplay();
-    std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
-    display->ShowNotification(message.c_str());
     display->SetChatMessage("system", "");
 
     // Release OTA object after activation is complete

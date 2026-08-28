@@ -92,6 +92,7 @@ private:
             if (xQueueReceive(controller->action_queue_, &params, pdMS_TO_TICKS(1000)) == pdTRUE) {
                 ESP_LOGI(TAG, "执行动作: %d", params.action_type);
                 Otto::ClearStop();  // 新动作开始时清除停止标志
+                controller->otto_.SetRestState(false);  // 有动作在执行：标记为活动状态，确保停止时 Home 不会因"已归位"而跳过
                 PowerManager::PauseBatteryUpdate();  // 动作开始时暂停电量更新
                 controller->is_action_in_progress_ = true;
                 if (params.action_type == ACTION_SERVO_SEQUENCE) {
@@ -937,12 +938,15 @@ public:
 
     // 立即停止当前动作与所有排队动作并归位。
     // 通过设置 Otto 停止标志让当前动作内部循环提前退出，同时清空动作队列。
-    // ActionTask 会继续存活，当前动作退出后自动 Home 归位。
+    // 清空后入队一个 ACTION_HOME，确保 ActionTask 无论停在哪个阶段（动作中 / 动作间隔）
+    // 最终都会执行一次归位：动作中会随停止标志提前退出并在末尾 Home；动作间隔被唤醒后会
+    // 直接执行该 Home，避免“队列被清空导致任务阻塞、停止标志悬空、舵机不归位”的竞态。
     void StopAll() {
         ESP_LOGI(TAG, "停止请求：打断当前动作并归位");
         continuous_dance_ = false;
         Otto::RequestStop();
         xQueueReset(action_queue_);
+        QueueAction(ACTION_HOME, 0, 0, 0, 0);
     }
 };
 

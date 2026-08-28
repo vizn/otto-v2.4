@@ -48,7 +48,7 @@ protected:
     const char* network_icon_ = nullptr;
     bool muted_ = false;
 
-    std::chrono::system_clock::time_point last_status_update_time_;
+    std::chrono::steady_clock::time_point last_status_update_time_;
     esp_timer_handle_t notification_timer_ = nullptr;
     std::unique_ptr<DynamicGlyphCache> dynamic_glyph_cache_;
 
