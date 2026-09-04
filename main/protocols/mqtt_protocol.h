@@ -20,6 +20,7 @@
 
 #define MQTT_PING_INTERVAL_SECONDS 90
 #define MQTT_RECONNECT_INTERVAL_MS 60000
+#define MQTT_KA_HELLO_INTERVAL_MS 5 * 60 * 1000
 
 #define MQTT_PROTOCOL_SERVER_HELLO_EVENT (1 << 0)
 
@@ -41,6 +42,8 @@ private:
     EventGroupHandle_t event_group_handle_;
 
     std::string publish_topic_;
+    std::string subscribe_topic_;
+    bool hello_sent_ = false;
 
     mutable std::mutex channel_mutex_;
     std::mutex crypto_mutex_;
@@ -53,6 +56,7 @@ private:
     uint32_t local_sequence_;
     uint32_t remote_sequence_;
     esp_timer_handle_t reconnect_timer_;
+    esp_timer_handle_t ka_hello_timer_;
 
     bool StartMqttClient(bool report_error=false);
     void ParseServerHello(const cJSON* root);

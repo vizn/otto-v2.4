@@ -298,6 +298,11 @@ LcdDisplay::~LcdDisplay() {
         gif_controller_.reset();
     }
 
+    if (preview_gif_controller_) {
+        preview_gif_controller_->Stop();
+        preview_gif_controller_.reset();
+    }
+
     if (preview_timer_ != nullptr) {
         esp_timer_stop(preview_timer_);
         esp_timer_delete(preview_timer_);
@@ -1026,6 +1031,12 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         esp_timer_stop(preview_timer_);
         lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+        if (preview_gif_controller_) {
+            preview_gif_controller_->Stop();
+            preview_gif_controller_.reset();
+        }
+        preview_gif_bytes_.clear();
+        preview_gif_bytes_.shrink_to_fit();
         preview_image_cached_.reset();
         if (gif_controller_) {
             gif_controller_->Start();
@@ -1033,8 +1044,33 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         return;
     }
 
+    // Stop any running preview GIF before switching content.
+    if (preview_gif_controller_) {
+        preview_gif_controller_->Stop();
+        preview_gif_controller_.reset();
+    }
+
     preview_image_cached_ = std::move(image);
     auto img_dsc = preview_image_cached_->image_dsc();
+
+    // Hide emoji_box_
+    if (gif_controller_) {
+        gif_controller_->Stop();
+    }
+    lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+    esp_timer_stop(preview_timer_);
+
+    if (preview_image_cached_->IsGif()) {
+        // 口型动画 GIF：交由 SetPreviewGif 拥有字节并整段循环播放。
+        auto gif_data = preview_image_cached_->image_dsc()->data;
+        auto gif_size = preview_image_cached_->image_dsc()->data_size;
+        std::vector<uint8_t> bytes(gif_data, gif_data + gif_size);
+        preview_image_cached_.reset();
+        SetPreviewGif(std::move(bytes));
+        return;
+    }
+
     lv_image_set_src(preview_image_, img_dsc);
     if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
         // 等比缩放，完整适配半个屏幕（宽高都约束，避免竖图被裁剪）
@@ -1050,15 +1086,67 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         lv_obj_set_size(preview_image_, (img_dsc->header.w * zoom) / 256,
                         (img_dsc->header.h * zoom) / 256);
     }
+    ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
+}
 
-    // Hide emoji_box_
+bool LcdDisplay::SetPreviewGif(std::vector<uint8_t> bytes) {
+    if (!setup_ui_called_ || preview_image_ == nullptr) {
+        ESP_LOGW(TAG, "SetPreviewGif called before SetupUI()");
+        return false;
+    }
+    DisplayLockGuard lock(this);
+    if (bytes.size() < 6 || bytes[0] != 'G' || bytes[1] != 'I' || bytes[2] != 'F') {
+        ESP_LOGW(TAG, "SetPreviewGif: not a GIF (%uB)", (unsigned)bytes.size());
+        return false;
+    }
+
+    // 接管字节所有权，控制其生命周期与动画一致。
+    preview_gif_bytes_ = std::move(bytes);
+
+    // Stop old GIF and any controller using freed data.
+    if (preview_gif_controller_) {
+        preview_gif_controller_->Stop();
+        preview_gif_controller_.reset();
+    }
+    preview_image_cached_.reset();
     if (gif_controller_) {
         gif_controller_->Stop();
     }
     lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
     esp_timer_stop(preview_timer_);
-    ESP_ERROR_CHECK(esp_timer_start_once(preview_timer_, PREVIEW_IMAGE_DURATION_MS * 1000));
+
+    LvglRawImage raw(preview_gif_bytes_.data(), preview_gif_bytes_.size());
+    preview_gif_controller_ = std::make_unique<LvglGif>(raw.image_dsc());
+    if (!preview_gif_controller_->IsLoaded()) {
+        ESP_LOGE(TAG, "SetPreviewGif: failed to load GIF");
+        preview_gif_controller_.reset();
+        preview_gif_bytes_.clear();
+        preview_gif_bytes_.shrink_to_fit();
+        return false;
+    }
+    lv_coord_t gif_w = preview_gif_controller_->width();
+    lv_coord_t gif_h = preview_gif_controller_->height();
+    if (gif_w > 0 && gif_h > 0) {
+        // 等比缩放，完整适配半个屏幕
+        lv_coord_t max_w = width_ / 2;
+        lv_coord_t max_h = height_ / 2;
+        lv_coord_t zoom_w = (max_w * 256) / gif_w;
+        lv_coord_t zoom_h = (max_h * 256) / gif_h;
+        lv_coord_t zoom = (zoom_w < zoom_h) ? zoom_w : zoom_h;
+        if (zoom > 256) {
+            zoom = 256;
+        }
+        lv_image_set_scale(preview_image_, zoom);
+        lv_obj_set_size(preview_image_, (gif_w * zoom) / 256, (gif_h * zoom) / 256);
+    }
+    preview_gif_controller_->SetFrameCallback(
+        [this]() { lv_image_set_src(preview_image_, preview_gif_controller_->image_dsc()); });
+    lv_image_set_src(preview_image_, preview_gif_controller_->image_dsc());
+    preview_gif_controller_->Start();
+    ESP_LOGI(TAG, "Preview GIF playing: %ux%u (%uB)", (unsigned)gif_w, (unsigned)gif_h,
+             (unsigned)preview_gif_bytes_.size());
+    return true;
 }
 
 void LcdDisplay::SetChatMessage(const char* role, const char* content) {

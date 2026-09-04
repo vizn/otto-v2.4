@@ -11,6 +11,7 @@
 #include "board.h"
 #include "application.h"
 #include "display.h"
+#include "display/lcd_display.h"
 #include "display/lvgl_display/lvgl_display.h"
 #include "display/lvgl_display/lvgl_image.h"
 #include "jpg/jpeg_to_image.h"
@@ -27,9 +28,20 @@
 // 解析"边跳舞边放<歌曲名>"指令（定义见文件尾部，供 HandleControlCommand 使用）
 static bool ParseDanceWithMusic(const std::string& text, std::string& song);
 
+namespace {
+// 口型 GIF 后台任务参数：记录课程 key 与代次，供异代丢弃
+struct StudyGifTaskArgs {
+    MiotClient* client;
+    std::string key;
+    uint32_t generation;
+};
+}  // namespace
+
 MiotClient::MiotClient() = default;
 
-MiotClient::~MiotClient() { Stop(); }
+MiotClient::~MiotClient() {
+    Stop();
+}
 
 void MiotClient::Start() {
     if (!kEnableMiotWs) {
@@ -135,8 +147,9 @@ void MiotClient::ConnectAndServe() {
     }
     cJSON_Delete(hello);
 
-    // 心跳循环：发送 JSON ping -> 服务器返回 JSON pong
+    // 心跳循环：发送 JSON ping -> 服务器返回 JSON pong；周期上报设备状态供 Web 控制台展示
     TickType_t last_heartbeat = xTaskGetTickCount();
+    TickType_t last_status = last_heartbeat;
     while (!stop_requested_) {
         if (reconnect_requested_.exchange(false)) {
             ESP_LOGI(TAG, "Reconnect requested, disconnecting");
@@ -146,6 +159,10 @@ void MiotClient::ConnectAndServe() {
         if (now - last_heartbeat >= pdMS_TO_TICKS(kHeartbeatIntervalMs)) {
             ws->Send("{\"type\":\"ping\"}");
             last_heartbeat = now;
+        }
+        if (now - last_status >= pdMS_TO_TICKS(kStatusReportIntervalMs)) {
+            SendDeviceStatus(ws.get());
+            last_status = now;
         }
         vTaskDelay(pdMS_TO_TICKS(500));
         if (!ws->IsConnected()) {
@@ -199,6 +216,45 @@ void MiotClient::HandleControlCommand(const cJSON* data) {
     }
     const char* type = cmd_type->valuestring;
     ESP_LOGI(TAG, "Control command: %s", type);
+
+    // 系统控制类指令不依赖 music_player_，优先处理（Web 控制台经 MIOT 网关下发）
+    if (strcmp(type, "reboot") == 0) {
+        auto& app = Application::GetInstance();
+        app.Schedule([&app]() { app.Reboot(); });
+        return;
+    } else if (strcmp(type, "ota") == 0) {
+        auto& app = Application::GetInstance();
+        cJSON* url = cJSON_GetObjectItem(data, "url");
+        std::string url_str = (url != nullptr && cJSON_IsString(url)) ? url->valuestring : "";
+        if (!url_str.empty()) {
+            app.Schedule([url_str, &app]() { app.UpgradeFirmware(url_str); });
+        } else {
+            app.RequestUpgradeFromServer();
+        }
+        return;
+    } else if (strcmp(type, "volume") == 0) {
+        cJSON* value = cJSON_GetObjectItem(data, "value");
+        if (value != nullptr && cJSON_IsNumber(value)) {
+            auto& board = Board::GetInstance();
+            auto codec = board.GetAudioCodec();
+            if (codec != nullptr) {
+                codec->SetOutputVolume(value->valueint);
+                ESP_LOGI(TAG, "Set volume to %d", value->valueint);
+            }
+        }
+        return;
+    } else if (strcmp(type, "brightness") == 0) {
+        cJSON* value = cJSON_GetObjectItem(data, "value");
+        if (value != nullptr && cJSON_IsNumber(value)) {
+            auto& board = Board::GetInstance();
+            auto backlight = board.GetBacklight();
+            if (backlight != nullptr) {
+                backlight->SetBrightness(static_cast<uint8_t>(value->valueint), true);
+                ESP_LOGI(TAG, "Set brightness to %d", value->valueint);
+            }
+        }
+        return;
+    }
 
     if (music_player_ == nullptr) {
         return;
@@ -303,6 +359,7 @@ void MiotClient::EngineControlMusic(const std::string& action) {
         // 显式停止会打断课程连播：禁止播完后自动续播下一课
         course_mode_.store(false);
         course_stopped_.store(true);
+        StopStudyGif();
         music_player_->StopPlay();
     } else if (action == "next") {
         course_mode_.store(false);
@@ -400,6 +457,7 @@ void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word
     course_stopped_.store(!course);
     last_course_key_ = real_key;
     ShowStudyImage(real_key);
+    StartStudyGifAsync(real_key);
     if (!real_word.empty()) {
         music_player_->ShowMessage("学习卡片：" + real_word);
     }
@@ -464,6 +522,40 @@ void MiotClient::TriggerDanceForSong(const std::string& keyword) {
 
 void MiotClient::HandleHeartbeatResponse() {
     // pong 已收到，连接保持
+}
+
+void MiotClient::SendDeviceStatus(WebSocket* ws) {
+    if (ws == nullptr || !ws->IsConnected()) {
+        return;
+    }
+    auto& board = Board::GetInstance();
+    auto* codec = board.GetAudioCodec();
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON* data = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "type", "device_status");
+    cJSON_AddStringToObject(data, "version", PROJECT_VER);
+    if (codec != nullptr) {
+        cJSON_AddNumberToObject(data, "volume", codec->output_volume());
+    }
+    auto* backlight = board.GetBacklight();
+    if (backlight != nullptr) {
+        cJSON_AddNumberToObject(data, "brightness", backlight->brightness());
+    }
+    cJSON_AddNumberToObject(data, "free_heap", esp_get_free_heap_size());
+    cJSON_AddNumberToObject(data, "min_free_heap",
+                            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+    if (music_player_ != nullptr) {
+        cJSON_AddBoolToObject(data, "music_playing", music_player_->IsPlaying());
+    }
+    cJSON_AddItemToObject(root, "data", data);
+
+    char* msg = cJSON_PrintUnformatted(root);
+    if (msg != nullptr) {
+        ws->Send(msg);
+        cJSON_free(msg);
+    }
+    cJSON_Delete(root);
 }
 
 std::string MiotClient::UrlEncode(const std::string& input) {
@@ -685,13 +777,16 @@ bool MiotClient::ShowStudyImage(const std::string& key) {
     if (key.empty()) {
         return false;
     }
+    return ShowStudyJpeg(kStudyImageUrlBase + UrlEncode(key), ("study:" + key).c_str());
+}
+
+bool MiotClient::ShowStudyJpeg(const std::string& url, const char* label) {
     auto& board = Board::GetInstance();
     auto* network = board.GetNetwork();
     if (network == nullptr) {
         ESP_LOGW(TAG, "No network interface for study image");
         return false;
     }
-    std::string url = kStudyImageUrlBase + UrlEncode(key);
     auto http = network->CreateHttp(3);
     if (http == nullptr) {
         ESP_LOGE(TAG, "Failed to create http client for study image");
@@ -769,9 +864,119 @@ bool MiotClient::ShowStudyImage(const std::string& key) {
     auto image = std::make_unique<LvglAllocatedImage>(out_data, out_len, out_width, out_height,
                                                       out_stride, LV_COLOR_FORMAT_RGB565);
     display->SetPreviewImage(std::move(image));
-    ESP_LOGI(TAG, "Study card image shown: %s (%ux%u %uB)", key.c_str(), (unsigned)out_width,
+    ESP_LOGI(TAG, "Study image shown: %s (%ux%u %uB)", label, (unsigned)out_width,
              (unsigned)out_height, (unsigned)out_len);
     return true;
+}
+
+bool MiotClient::ShowStudyGif(const std::string& key) {
+    if (key.empty()) {
+        return false;
+    }
+    auto& board = Board::GetInstance();
+    auto* network = board.GetNetwork();
+    if (network == nullptr) {
+        ESP_LOGW(TAG, "No network interface for study gif");
+        return false;
+    }
+    std::string url = std::string(kStudyGifUrlBase) + UrlEncode(key) + "/gif";
+    auto http = network->CreateHttp(3);
+    if (http == nullptr) {
+        ESP_LOGE(TAG, "Failed to create http client for study gif");
+        return false;
+    }
+    http->SetTimeout(20000);
+    http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
+    http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
+    http->SetHeader("Accept-Encoding", "identity");
+    if (!http->Open("GET", url)) {
+        ESP_LOGE(TAG, "Study gif HTTP open failed: %s", url.c_str());
+        http->Close();
+        return false;
+    }
+    int status = http->GetStatusCode();
+    if (status != 200) {
+        ESP_LOGI(TAG, "Study gif HTTP status %d (回退封面)", status);
+        http->Close();
+        return false;
+    }
+    size_t content_length = http->GetBodyLength();
+    // 口型 GIF 可能超过默认预览图上限：放宽到 4MB，且要求至少 512KB 以避开噪声小图。
+    if (content_length < 512 * 1024 || content_length > 4 * 1024 * 1024) {
+        ESP_LOGW(TAG, "Study gif invalid body length %u", (unsigned)content_length);
+        http->Close();
+        return false;
+    }
+    std::vector<uint8_t> data(content_length);
+    size_t total_read = 0;
+    while (total_read < content_length) {
+        int ret = http->Read((char*)(data.data() + total_read), content_length - total_read);
+        if (ret < 0) {
+            ESP_LOGE(TAG, "Study gif HTTP read failed");
+            http->Close();
+            return false;
+        }
+        if (ret == 0) {
+            break;
+        }
+        total_read += ret;
+    }
+    http->Close();
+    if (total_read < content_length) {
+        ESP_LOGW(TAG, "Study gif truncated: %u/%u", (unsigned)total_read, (unsigned)content_length);
+        return false;
+    }
+    // GIF 魔数校验
+    if (data.size() < 6 || data[0] != 'G' || data[1] != 'I' || data[2] != 'F') {
+        ESP_LOGW(TAG, "Study gif magic mismatch");
+        return false;
+    }
+
+    // 交给显示层：SetPreviewGif 接管字节所有权并整段循环播放。
+    auto* display = dynamic_cast<LcdDisplay*>(board.GetDisplay());
+    if (display == nullptr) {
+        ESP_LOGW(TAG, "No LCD display for study gif");
+        return false;
+    }
+    bool ok = display->SetPreviewGif(std::move(data));
+    ESP_LOGI(TAG, "Study gif %s: %s", ok ? "shown" : "failed", key.c_str());
+    return ok;
+}
+
+void MiotClient::StartStudyGifAsync(const std::string& key) {
+    if (key.empty()) {
+        return;
+    }
+    uint32_t generation = ++study_gif_generation_;
+    auto* args = new StudyGifTaskArgs{this, key, generation};
+    BaseType_t ok = xTaskCreate(StudyGifTaskEntry, "study_gif", 4096, args, 3, nullptr);
+    if (ok != pdPASS) {
+        delete args;
+        ESP_LOGE(TAG, "Study gif task create failed");
+    }
+}
+
+void MiotClient::StopStudyGif() {
+    study_gif_generation_.fetch_add(1);
+}
+
+void MiotClient::StudyGifTaskEntry(void* arg) {
+    auto* args = static_cast<StudyGifTaskArgs*>(arg);
+    MiotClient* client = args->client;
+    std::string key = args->key;
+    uint32_t generation = args->generation;
+    delete args;
+    client->RunStudyGif(key, generation);
+    vTaskDelete(nullptr);
+}
+
+void MiotClient::RunStudyGif(const std::string& key, uint32_t generation) {
+    // 下载为当前课程（异代则丢弃结果，避免旧课 GIF 覆盖新课）。
+    if (study_gif_generation_.load() == generation && ShowStudyGif(key)) {
+        ESP_LOGI(TAG, "Study gif task committed: %s", key.c_str());
+    } else {
+        ESP_LOGW(TAG, "Study gif task skipped/stale: %s", key.c_str());
+    }
 }
 
 void MiotClient::HandlePlaybackStopped() {
@@ -863,6 +1068,7 @@ void MiotClient::ContinueCourse(const std::string& after) {
     last_course_key_ = key;
     Application::GetInstance().SetStudyCardPlaying(true);
     ShowStudyImage(key);
+    StartStudyGifAsync(key);
     if (!word.empty()) {
         music_player_->ShowMessage("学习卡片：" + word);
     }

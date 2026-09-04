@@ -311,6 +311,9 @@ std::string WifiBoard::GetDeviceStatusJson() {
     auto& board = Board::GetInstance();
     auto root = cJSON_CreateObject();
 
+    // Firmware version
+    cJSON_AddStringToObject(root, "version", PROJECT_VER);
+
     // Audio speaker
     auto audio_speaker = cJSON_CreateObject();
     if (auto codec = board.GetAudioCodec()) {
@@ -357,6 +360,12 @@ std::string WifiBoard::GetDeviceStatusJson() {
         cJSON_AddNumberToObject(chip, "temperature", temp);
         cJSON_AddItemToObject(root, "chip", chip);
     }
+
+    // Memory
+    auto memory = cJSON_CreateObject();
+    cJSON_AddNumberToObject(memory, "free_heap", SystemInfo::GetFreeHeapSize());
+    cJSON_AddNumberToObject(memory, "min_free_heap", SystemInfo::GetMinimumFreeHeapSize());
+    cJSON_AddItemToObject(root, "memory", memory);
 
     auto str = cJSON_PrintUnformatted(root);
     std::string result(str);

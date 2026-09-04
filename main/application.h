@@ -109,6 +109,9 @@ public:
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
+    // 无指定 URL 时触发服务器 OTA 检查：有新版则自动升级，否则提示已是最新。
+    // 线程安全（内部经 Schedule 调度到主任务），供 Web 控制台 OTA 按钮调用。
+    void RequestUpgradeFromServer();
     bool CanEnterSleepMode();
     void SendMcpMessage(const std::string& payload);
     void RegisterMcpBroadcastCallback(std::function<void(const std::string&)> callback);

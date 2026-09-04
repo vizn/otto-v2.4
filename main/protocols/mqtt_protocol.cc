@@ -32,6 +32,28 @@ MqttProtocol::MqttProtocol() {
         .arg = this,
     };
     esp_timer_create(&reconnect_timer_args, &reconnect_timer_);
+
+    // 周期保活 hello：服务器/网关重启后能在 idle 态自动重建在线会话（无需复位设备）
+    esp_timer_create_args_t ka_hello_timer_args = {
+        .callback =
+            [](void* arg) {
+                MqttProtocol* protocol = (MqttProtocol*)arg;
+                auto& app = Application::GetInstance();
+                if (app.GetDeviceState() != kDeviceStateIdle || !protocol->hello_sent_) {
+                    return;  // 语音会话期间不打扰，避免重建桥导致 MCP 瞬断
+                }
+                auto alive = protocol->alive_;  // Capture alive flag
+                app.Schedule([protocol, alive]() {
+                    if (*alive && protocol->mqtt_ != nullptr) {
+                        ESP_LOGI(TAG, "MQTT keep-alive re-hello");
+                        protocol->SendText(protocol->GetHelloMessage());
+                    }
+                });
+            },
+        .arg = this,
+    };
+    esp_timer_create(&ka_hello_timer_args, &ka_hello_timer_);
+    esp_timer_start_periodic(ka_hello_timer_, (uint64_t)MQTT_KA_HELLO_INTERVAL_MS * 1000);
 }
 
 MqttProtocol::~MqttProtocol() {
@@ -43,6 +65,11 @@ MqttProtocol::~MqttProtocol() {
     if (reconnect_timer_ != nullptr) {
         esp_timer_stop(reconnect_timer_);
         esp_timer_delete(reconnect_timer_);
+    }
+
+    if (ka_hello_timer_ != nullptr) {
+        esp_timer_stop(ka_hello_timer_);
+        esp_timer_delete(ka_hello_timer_);
     }
 
     std::unique_ptr<Udp> udp;
@@ -81,6 +108,7 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
     auto password = settings.GetString("password");
     int keepalive_interval = settings.GetInt("keepalive", 240);
     publish_topic_ = settings.GetString("publish_topic");
+    subscribe_topic_ = settings.GetString("subscribe_topic");
 
     if (endpoint.empty()) {
         ESP_LOGW(TAG, "MQTT endpoint is not specified");
@@ -98,16 +126,28 @@ bool MqttProtocol::StartMqttClient(bool report_error) {
         if (on_disconnected_ != nullptr) {
             on_disconnected_();
         }
+        hello_sent_ = false;
         ESP_LOGI(TAG, "MQTT disconnected, schedule reconnect in %d seconds",
                  MQTT_RECONNECT_INTERVAL_MS / 1000);
         esp_timer_start_once(reconnect_timer_, MQTT_RECONNECT_INTERVAL_MS * 1000);
     });
 
     mqtt_->OnConnected([this]() {
+        esp_timer_stop(reconnect_timer_);
         if (on_connected_ != nullptr) {
             on_connected_();
         }
-        esp_timer_stop(reconnect_timer_);
+        // MQTT 常驻长链：订阅服务器下发主题，并主动 hello 保持在线会话，
+        // 使服务器侧注册连接并保留 MCP 通道（空闲时控制台状态/指令可用）
+        if (!subscribe_topic_.empty()) {
+            mqtt_->Subscribe(subscribe_topic_);
+        }
+        if (!hello_sent_) {
+            hello_sent_ = true;
+            if (!SendText(GetHelloMessage())) {
+                ESP_LOGW(TAG, "Failed to send keep-alive hello");
+            }
+        }
     });
 
     mqtt_->OnMessage([this](const std::string& topic, const std::string& payload) {

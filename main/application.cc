@@ -1050,6 +1050,23 @@ void Application::Reboot() {
     esp_restart();
 }
 
+void Application::RequestUpgradeFromServer() {
+    Schedule([this]() {
+        ESP_LOGI(TAG, "Console requested OTA check (no explicit URL)");
+        auto display = Board::GetInstance().GetDisplay();
+        if (ota_->CheckVersion() == ESP_OK && ota_->HasNewVersion()) {
+            UpgradeFirmware(ota_->GetFirmwareUrl(), ota_->GetFirmwareVersion());
+        } else {
+            ESP_LOGW(TAG, "No new version available or version check failed");
+            if (display != nullptr) {
+                char buffer[64];
+                snprintf(buffer, sizeof(buffer), "已是最新版本: %s", PROJECT_VER);
+                display->SetChatMessage("system", buffer);
+            }
+        }
+    });
+}
+
 bool Application::UpgradeFirmware(const std::string& url, const std::string& version) {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();

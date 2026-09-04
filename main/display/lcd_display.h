@@ -8,6 +8,7 @@
 #include <esp_lcd_panel_ops.h>
 #include <atomic>
 #include <memory>
+#include <vector>
 
 #define PREVIEW_IMAGE_DURATION_MS 5000
 
@@ -27,6 +28,8 @@ protected:
     lv_obj_t* emoji_label_ = nullptr;
     lv_obj_t* emoji_image_ = nullptr;
     std::unique_ptr<LvglGif> gif_controller_ = nullptr;
+    std::unique_ptr<LvglGif> preview_gif_controller_ = nullptr;
+    std::vector<uint8_t> preview_gif_bytes_;  // 拥有当前口型 GIF 的原始字节，随动画生命周期释放
     lv_obj_t* emoji_box_ = nullptr;
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
@@ -48,6 +51,8 @@ public:
     virtual void SetChatMessage(const char* role, const char* content) override;
     virtual void ClearChatMessages() override;
     virtual void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+    // 播放口型动画 GIF：接管 bytes 所有权，整段循环；返回是否成功
+    bool SetPreviewGif(std::vector<uint8_t> bytes);
     virtual void SetupUI() override;
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
