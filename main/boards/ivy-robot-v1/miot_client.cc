@@ -2,8 +2,15 @@
 
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <algorithm>
 #include <cctype>
+#include <cerrno>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -458,12 +465,56 @@ void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word
     course_mode_.store(course);
     course_stopped_.store(!course);
     last_course_key_ = real_key;
+    study_gif_shown_.store(false);
     ShowStudyImage(real_key);
     StartStudyGifAsync(real_key);
-    if (!real_word.empty()) {
-        music_player_->ShowMessage("学习卡片：" + real_word);
+    // 先等口型 GIF 上屏（限时 2s）再开始音频：GIF 与音频并发拉取时音频流会抢占 WiFi，
+    // 导致唯一的口型 GIF 下载被饿死横跨整个课程（实测 776KB 花了 92s）。
+    // 由独立顺序播放任务执行，避免阻塞 MCP 响应与主任务。
+    StartStudyPlayAfterGif(real_key, real_word);
+}
+
+// 顺序播放任务参数：等口型 GIF 上屏后播放课程音频
+struct StudyPlayAfterGifArgs {
+    MiotClient* client;
+    std::string key;
+    std::string word;
+};
+
+void MiotClient::StartStudyPlayAfterGif(const std::string& key, const std::string& word) {
+    if (music_player_ == nullptr || key.empty()) {
+        return;
     }
-    music_player_->PlayStudyCard(real_key);
+    auto* args = new StudyPlayAfterGifArgs{this, key, word};
+    BaseType_t ok = xTaskCreate(StudyPlayAfterGifTaskEntry, "study_play", 4096, args, 5, nullptr);
+    if (ok != pdPASS) {
+        delete args;
+        ESP_LOGE(TAG, "Study play task create failed");
+        if (!word.empty()) {
+            music_player_->ShowMessage("学习卡片：" + word);
+        }
+        music_player_->PlayStudyCard(key);
+    }
+}
+
+void MiotClient::StudyPlayAfterGifTaskEntry(void* arg) {
+    auto* args = static_cast<StudyPlayAfterGifArgs*>(arg);
+    MiotClient* client = args->client;
+    std::string key = args->key;
+    std::string word = args->word;
+    delete args;
+    // 等待口型 GIF 上屏（限时 2s）；超时则音频照常开始，GIF 由后台任务继续补显
+    for (int wait_ms = 0; wait_ms < 2000 && !client->study_gif_shown_.load();
+         wait_ms += 50) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    if (!word.empty() && client->music_player_ != nullptr) {
+        client->music_player_->ShowMessage("学习卡片：" + word);
+    }
+    if (client->music_player_ != nullptr) {
+        client->music_player_->PlayStudyCard(key);
+    }
+    vTaskDelete(nullptr);
 }
 
 // 解析"边跳舞边放<歌曲名>"指令。命中返回 true 并输出实际要播放的歌曲关键词。
@@ -871,61 +922,164 @@ bool MiotClient::ShowStudyJpeg(const std::string& url, const char* label) {
     return true;
 }
 
+bool MiotClient::DownloadStudyGifHttp(const std::string& host, int port, const std::string& path,
+                                      std::vector<uint8_t>& out) {
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
+        ESP_LOGE(TAG, "Study gif bad host: %s", host.c_str());
+        return false;
+    }
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        ESP_LOGE(TAG, "Study gif socket failed: %d", errno);
+        return false;
+    }
+    // 每个 recv 最多等待 8 秒，避免异常时无限阻塞
+    struct timeval tv{};
+    tv.tv_sec = 8;
+    tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        ESP_LOGE(TAG, "Study gif connect failed: %d", errno);
+        close(fd);
+        return false;
+    }
+
+    std::string request = "GET " + path + " HTTP/1.1\r\n"
+                          "Host: " + host + ":" + std::to_string(port) + "\r\n"
+                          "User-Agent: ESP32-MIOT/1.0\r\n"
+                          "Accept-Encoding: identity\r\n"
+                          "Connection: close\r\n\r\n";
+    if (send(fd, request.data(), request.size(), 0) != (ssize_t)request.size()) {
+        ESP_LOGE(TAG, "Study gif send failed: %d", errno);
+        close(fd);
+        return false;
+    }
+
+    // 整段读入内存：socket 内核缓冲直接交付大块数据，避免逐 1500B 分块解析
+    std::vector<uint8_t> raw;
+    raw.reserve(512 * 1024);
+    std::vector<uint8_t> chunk(16384);
+    int64_t t0 = esp_timer_get_time() / 1000;
+    int64_t last_report_ms = t0;
+    while (true) {
+        ssize_t n = recv(fd, chunk.data(), chunk.size(), 0);
+        if (n == 0) {
+            break;
+        }
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                ESP_LOGW(TAG, "Study gif recv timeout after %u bytes", (unsigned)raw.size());
+            } else {
+                ESP_LOGE(TAG, "Study gif recv failed: %d", errno);
+            }
+            close(fd);
+            return false;
+        }
+        raw.insert(raw.end(), chunk.data(), chunk.data() + n);
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms - last_report_ms >= 1000) {
+            ESP_LOGI(TAG, "Study gif download progress: %u bytes in %lld ms", (unsigned)raw.size(),
+                     now_ms - t0);
+            last_report_ms = now_ms;
+        }
+    }
+    close(fd);
+
+    if (raw.size() < 4) {
+        ESP_LOGW(TAG, "Study gif empty response (%u bytes)", (unsigned)raw.size());
+        return false;
+    }
+    // 定位响应头结束 \r\n\r\n
+    size_t hdr_end = std::string::npos;
+    for (size_t i = 0; i + 3 < raw.size(); ++i) {
+        if (raw[i] == '\r' && raw[i + 1] == '\n' && raw[i + 2] == '\r' && raw[i + 3] == '\n') {
+            hdr_end = i;
+            break;
+        }
+    }
+    if (hdr_end == std::string::npos) {
+        ESP_LOGW(TAG, "Study gif invalid response (no header terminator)");
+        return false;
+    }
+    std::string header(raw.begin(), raw.begin() + hdr_end);
+    ESP_LOGI(TAG, "Study gif response header: %.120s", header.c_str());
+    bool ok_status = header.find(" 200 ") != std::string::npos || header.find("200 ") != std::string::npos;
+    if (!ok_status) {
+        ESP_LOGW(TAG, "Study gif bad HTTP status");
+        return false;
+    }
+    std::string lheader = header;
+    std::transform(lheader.begin(), lheader.end(), lheader.begin(), ::tolower);
+    size_t cl_pos = lheader.find("content-length:");
+    if (cl_pos != std::string::npos) {
+        size_t val = cl_pos + 15;
+        while (val < lheader.size() && (lheader[val] == ' ' || lheader[val] == '\r' || lheader[val] == '\n')) {
+            ++val;
+        }
+        size_t end = val;
+        while (end < lheader.size() && isdigit((unsigned char)lheader[end])) {
+            ++end;
+        }
+        size_t content_length = 0;
+        if (end > val) {
+            content_length = std::strtoul(lheader.substr(val, end - val).c_str(), nullptr, 10);
+        }
+        size_t body_start = hdr_end + 4;
+        size_t body_bytes = raw.size() - body_start;
+        if (content_length > 0 && body_bytes < content_length) {
+            ESP_LOGW(TAG, "Study gif truncated: %u/%u", (unsigned)body_bytes,
+                     (unsigned)content_length);
+            return false;
+        }
+        out.assign(raw.begin() + body_start, raw.end());
+    } else {
+        out.assign(raw.begin() + hdr_end + 4, raw.end());
+    }
+    return true;
+}
+
 bool MiotClient::ShowStudyGif(const std::string& key) {
     if (key.empty()) {
         return false;
     }
     auto& board = Board::GetInstance();
-    auto* network = board.GetNetwork();
-    if (network == nullptr) {
-        ESP_LOGW(TAG, "No network interface for study gif");
-        return false;
-    }
     std::string url = std::string(kStudyGifUrlBase) + UrlEncode(key);
-    auto http = network->CreateHttp(3);
-    if (http == nullptr) {
-        ESP_LOGE(TAG, "Failed to create http client for study gif");
+    // 拆分固定前缀 http://host:port/path?key= -> host/port/path
+    const char* base = "http://";
+    size_t host_start = strlen(base);
+    std::string rest = url.substr(host_start);
+    size_t port_end = rest.find('/');
+    if (port_end == std::string::npos) {
+        ESP_LOGW(TAG, "Study gif invalid url: %s", url.c_str());
         return false;
     }
-    http->SetTimeout(40000);
-    http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
-    http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
-    http->SetHeader("Accept-Encoding", "identity");
-    if (!http->Open("GET", url)) {
-        ESP_LOGE(TAG, "Study gif HTTP open failed: %s", url.c_str());
-        http->Close();
+    std::string hostport = rest.substr(0, port_end);
+    std::string http_path = rest.substr(port_end);
+    size_t colon = hostport.find(':');
+    std::string host = hostport;
+    int port = 80;
+    if (colon != std::string::npos) {
+        host = hostport.substr(0, colon);
+        std::string port_str = hostport.substr(colon + 1);
+        port = std::atoi(port_str.c_str());
+        if (port <= 0 || port > 65535) {
+            ESP_LOGW(TAG, "Study gif invalid port: %s", port_str.c_str());
+            return false;
+        }
+    }
+    std::vector<uint8_t> data;
+    if (!DownloadStudyGifHttp(host, port, http_path, data)) {
+        ESP_LOGW(TAG, "Study gif download failed: %s", key.c_str());
         return false;
     }
-    int status = http->GetStatusCode();
-    if (status != 200) {
-        ESP_LOGI(TAG, "Study gif HTTP status %d (回退封面)", status);
-        http->Close();
-        return false;
-    }
-    size_t content_length = http->GetBodyLength();
+    size_t content_length = data.size();
     // 口型 GIF 可能超过默认预览图上限：放宽到 4MB，且要求至少 512KB 以避开噪声小图。
     if (content_length < 512 * 1024 || content_length > 4 * 1024 * 1024) {
         ESP_LOGW(TAG, "Study gif invalid body length %u", (unsigned)content_length);
-        http->Close();
-        return false;
-    }
-    std::vector<uint8_t> data(content_length);
-    size_t total_read = 0;
-    while (total_read < content_length) {
-        int ret = http->Read((char*)(data.data() + total_read), content_length - total_read);
-        if (ret < 0) {
-            ESP_LOGE(TAG, "Study gif HTTP read failed");
-            http->Close();
-            return false;
-        }
-        if (ret == 0) {
-            break;
-        }
-        total_read += ret;
-    }
-    http->Close();
-    if (total_read < content_length) {
-        ESP_LOGW(TAG, "Study gif truncated: %u/%u", (unsigned)total_read, (unsigned)content_length);
         return false;
     }
     // GIF 魔数校验
@@ -951,7 +1105,7 @@ void MiotClient::StartStudyGifAsync(const std::string& key) {
     }
     uint32_t generation = ++study_gif_generation_;
     auto* args = new StudyGifTaskArgs{this, key, generation};
-    BaseType_t ok = xTaskCreate(StudyGifTaskEntry, "study_gif", 4096, args, 3, nullptr);
+    BaseType_t ok = xTaskCreate(StudyGifTaskEntry, "study_gif", 4096, args, 6, nullptr);
     if (ok != pdPASS) {
         delete args;
         ESP_LOGE(TAG, "Study gif task create failed");
@@ -964,6 +1118,7 @@ void MiotClient::StopStudyGif() {
 
 void MiotClient::ClearStudyPreview() {
     StopStudyGif();
+    study_gif_shown_.store(false);
     auto* display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
     if (display != nullptr) {
         display->SetPreviewImage(nullptr);
@@ -990,6 +1145,7 @@ void MiotClient::RunStudyGif(const std::string& key, uint32_t generation) {
             return;
         }
         if (ShowStudyGif(key)) {
+            study_gif_shown_.store(true);
             ESP_LOGI(TAG, "Study gif task committed: %s", key.c_str());
             return;
         }
@@ -1091,12 +1247,10 @@ void MiotClient::ContinueCourse(const std::string& after) {
     }
     last_course_key_ = key;
     Application::GetInstance().SetStudyCardPlaying(true);
+    study_gif_shown_.store(false);
     ShowStudyImage(key);
     StartStudyGifAsync(key);
-    if (!word.empty()) {
-        music_player_->ShowMessage("学习卡片：" + word);
-    }
-    music_player_->PlayStudyCard(key);
+    StartStudyPlayAfterGif(key, word);
 }
 
 // === MCP 媒体工具入口：直接调用媒体引擎方法，不构造命令 JSON ===

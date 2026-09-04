@@ -81,6 +81,8 @@ private:
     std::string last_course_key_;
     // 口型 GIF 后台任务代次：每次课程开始自增，异代下载结果丢弃
     std::atomic<uint32_t> study_gif_generation_{0};
+    // 口型 GIF 是否已成功上屏：播放前同步等待（限时 2s）保证 GIF 先于音频出现
+    std::atomic<bool> study_gif_shown_{false};
 
     void Run();
     void ConnectAndServe();
@@ -110,9 +112,16 @@ private:
     bool ShowStudyJpeg(const std::string& url, const char* label);
     // 口型动画 GIF：下载课程 GIF 整段循环播放；失败返回 false（回退封面）
     bool ShowStudyGif(const std::string& key);
+    // 使用 BSD socket 直连服务器下载口型 GIF（http://host:port/path），
+    // 避免 HttpClient 逐 1500B 分块解析对大文件的极慢吞吐。成功返回 true 并填充输出缓冲。
+    bool DownloadStudyGifHttp(const std::string& host, int port, const std::string& path,
+                              std::vector<uint8_t>& out);
     // 后台任务拉取并上屏口型 GIF（避免阻塞 MCP 响应）；每次课程开始调用
     void StartStudyGifAsync(const std::string& key);
     void StopStudyGif();
+    // 独立任务：等待口型 GIF 上屏（限时 2s）后再播放课程音频，避免音频流抢占 WiFi
+    void StartStudyPlayAfterGif(const std::string& key, const std::string& word);
+    static void StudyPlayAfterGifTaskEntry(void* arg);
     // 结束学习（单卡播完/课程播完/显式停止）后清理口型 GIF 预览，避免残留循环
     void ClearStudyPreview();
     void RunStudyGif(const std::string& key, uint32_t generation);
