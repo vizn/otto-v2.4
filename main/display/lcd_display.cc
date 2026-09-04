@@ -1029,6 +1029,7 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
 
     if (image == nullptr) {
         esp_timer_stop(preview_timer_);
+        lv_image_set_rotation(preview_image_, 0);
         lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
         if (preview_gif_controller_) {
@@ -1072,6 +1073,7 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     }
 
     lv_image_set_src(preview_image_, img_dsc);
+    lv_image_set_rotation(preview_image_, 0);
     if (img_dsc->header.w > 0 && img_dsc->header.h > 0) {
         // 等比缩放，完整适配半个屏幕（宽高都约束，避免竖图被裁剪）
         lv_coord_t max_w = width_ / 2;
@@ -1127,19 +1129,24 @@ bool LcdDisplay::SetPreviewGif(std::vector<uint8_t> bytes) {
     }
     lv_coord_t gif_w = preview_gif_controller_->width();
     lv_coord_t gif_h = preview_gif_controller_->height();
+
+    // 90° 逆时针旋转（LVGL 单位: 0.1°, 270° = 2700）
+    lv_image_set_rotation(preview_image_, 2700);
+
     if (gif_w > 0 && gif_h > 0) {
-        // 等比缩放，完整适配半个屏幕
-        lv_coord_t max_w = width_ / 2;
-        lv_coord_t max_h = height_ / 2;
-        lv_coord_t zoom_w = (max_w * 256) / gif_w;
-        lv_coord_t zoom_h = (max_h * 256) / gif_h;
+        // 旋转后尺寸互换：有效宽=gif_h, 有效高=gif_w
+        lv_coord_t eff_w = gif_h;
+        lv_coord_t eff_h = gif_w;
+        lv_coord_t zoom_w = (width_ * 256) / eff_w;
+        lv_coord_t zoom_h = (height_ * 256) / eff_h;
         lv_coord_t zoom = (zoom_w < zoom_h) ? zoom_w : zoom_h;
         if (zoom > 256) {
             zoom = 256;
         }
         lv_image_set_scale(preview_image_, zoom);
-        lv_obj_set_size(preview_image_, (gif_w * zoom) / 256, (gif_h * zoom) / 256);
+        lv_obj_set_size(preview_image_, (eff_w * zoom) / 256, (eff_h * zoom) / 256);
     }
+    lv_obj_align(preview_image_, LV_ALIGN_CENTER, 0, 0);
     preview_gif_controller_->SetFrameCallback(
         [this]() { lv_image_set_src(preview_image_, preview_gif_controller_->image_dsc()); });
     lv_image_set_src(preview_image_, preview_gif_controller_->image_dsc());
