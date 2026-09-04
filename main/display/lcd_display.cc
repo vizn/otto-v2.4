@@ -1130,8 +1130,8 @@ bool LcdDisplay::SetPreviewGif(std::vector<uint8_t> bytes) {
     lv_coord_t gif_w = preview_gif_controller_->width();
     lv_coord_t gif_h = preview_gif_controller_->height();
 
-    // 90° 逆时针旋转（LVGL 单位: 0.1°, 270° = 2700）
-    lv_image_set_rotation(preview_image_, 2700);
+    // 90° 顺时针旋转（LVGL 单位: 0.1°, 90° = 900）
+    lv_image_set_rotation(preview_image_, 900);
 
     if (gif_w > 0 && gif_h > 0) {
         // 旋转后尺寸互换：有效宽=gif_h, 有效高=gif_w
