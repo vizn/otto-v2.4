@@ -83,6 +83,33 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 `QueueContinuousDance()` 重置 `dance_routine_index_ = 0`，每次新会话从头开始编排。
 
+### 5. 功夫英语学习卡片/课程：口型动画 GIF 同步播放
+
+在 `main/boards/ivy-robot-v1/miot_client.cc` 实现学习卡片/课程连播链路，口型动画以 GIF 形式与音频同步上屏。
+
+**端点常量**（`miot_client.h`）：
+
+| 常量 | 地址 | 用途 |
+|---|---|---|
+| `kStudyCardApiBase` | 8001 `/api/study/card` | 取起始卡 {word,key}（MCP 路径下 key 为空时自动获取） |
+| `kStudyCourseFindApiBase` | 8001 `/api/study/course/find` | 课程查找 |
+| `kStudyGifUrlBase` | 8003 `/api/study/gif?key=` | 口型 GIF（经服务端代理，见服务器端功能§5） |
+| `kStudyStreamUrlBase` / `kStudyImageUrlBase` / `kStudyCourseNextApiBase` | 8003 对应 `/api/study/stream` `image` `course/next` | 音频流 / 封面图 / 下一条 |
+
+**播放链路**：课程开始 → 封面图 `ShowStudyImage`（Lvgl）→ 音频 `music_player_->PlayStream`（Resampler 22050→24000Hz）→ 后台任务 `StartStudyGifAsync` 拉取 GIF（20s 超时，512KB~4MB 尺寸门控）→ `LcdDisplay::SetPreviewGif` 循环播放口型动画；`study_gif_generation_` 令牌机制丢弃过期任务 → 单卡播完自动 `ContinueCourse` 拉 `/api/study/course/next?after=` 续播。
+
+**缺陷修复 1（GIF 可走 8003）**：设备初期直连 8001 拉 ~1MB GIF 固定失败（`Study gif HTTP read failed` → `task skipped/stale`），与镜像/音频同路径改走 8003 代理后实测下载+上屏成功（`Study gif shown` / `LcdDisplay: Preview GIF playing: 180x180`）。
+
+**缺陷修复 2（残留循环清理）**：`SetPreviewGif` 内部 `esp_timer_stop(preview_timer_)` 停止自动隐藏定时器，GIF 会一直循环。新增 `MiotClient::ClearStudyPreview()`（`StopStudyGif` + `SetPreviewImage(nullptr)`），在单卡播完/课程播完/显式 stop/next/previous 时调用，避免口型动画残留屏幕。
+
+### 6. 服务端 AEC（实时打断）
+
+`CONFIG_USE_SERVER_AEC=y` 启用服务端降噪/AEC，实现对话（TTS 播放下行）实时打断：
+
+- 设备：`aec_mode_=kAecOnServerSide` → `GetDefaultListeningMode()` 返回 `kListeningModeRealtime`，下行 TTS 播放中说话可实时打断返回对话
+- 服务端移植上游 v0.9.6 `_mqtt_audio_with_aec`，客户端音频含时间戳，服务端用下放 TTS 时间戳匹配参考 PCM 做启发式谱减降噪；`_check_aec_cache_expiry` 30s 清理缓存
+- **局限**：仅覆盖服务端下行音频（对话 TTS）；课程音频为本地播放、且播放期间设备主动 `SuspendWakeWordForPlayback` 停唤醒词，课程内语音打断暂不可行（esp-sr 软件 AEC 需 M...R 交错参考输入，ivy 板 simplex 无硬件参考通道）
+
 ## 服务器端功能
 
 服务器端改动位于 xiaozhi-esp32-server（`/vol1/docker/xiaozhi-esp32-server`），通过补丁方式部署。
@@ -211,6 +238,24 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 | `play_radio` | 播放电台 | 未启用 |
 | `search_from_ragflow` | RAGFlow 知识库检索 | 未启用 |
 | `xiaozhi_push` | 推送消息到设备 | 未启用 |
+
+### 5. 口型 GIF 代理（`/api/study/gif`）
+
+`core/miot_gateway.py` 新增口型 GIF 代理路由，与 `image`/`stream` 同路径走 8003：
+
+- 路由：`GET /api/study/gif?key=xxx` → 转发 `{STUDY_API_BASE}/api/study/card/{key}/gif`
+- 响应：透传 body、`Content-Type: image/gif`、`Cache-Control: max-age=86400`
+- 错误：非 200 回 502，异常回 500；代理失败不影响其它端点
+- **背景**：设备直连 8001（kungfu backend）拉取 ~1MB 大 GIF 固定失败（`Study gif HTTP read failed`），改走 8003 代理（与镜像/音频同链路）后实测成功
+
+### 6. 服务端 AEC（实时打断）
+
+服务端移植上游 v0.9.6 的 AEC 支持（提交 `931b658`，仅本地）：
+
+- `core/connection.py`：`_mqtt_audio_with_aec` / `_apply_aec` / `client_aec`，按时间戳匹配下放 TTS 参考 PCM 做启发式谱减
+- `core/handle/helloHandle.py`：hello 响应声明 `features.aec`（需设备固件 `CONFIG_USE_SERVER_AEC=y`）
+- `core/handle/sendAudioHandle.py`：转发设备音频并对下放内容做参考缓存（`aec_audio_cache`，键=下发时间戳 bytes[8:12]）
+- 依赖：容器内 numpy 1.26.4 + opuslib_next；仅覆盖服务端下行音频，课程本地音频不在其列
 
 ## MIOT → MCP 迁移（设备侧，已完成 Phase 1）
 
