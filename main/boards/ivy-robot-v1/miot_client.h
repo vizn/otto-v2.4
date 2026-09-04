@@ -63,7 +63,7 @@ private:
     // 学习卡片/课程起始卡：从 8001 词库服务自取 {word,key}（MCP 路径下 key 为空时自动获取，去除对 /ws 的依赖）
     static constexpr const char* kStudyCardApiBase = "http://192.168.199.162:8001/api/study/card";
     static constexpr const char* kStudyCourseFindApiBase = "http://192.168.199.162:8001/api/study/course/find";
-    static constexpr const char* kStudyGifUrlBase = "http://192.168.199.162:8001/api/study/card/";
+    static constexpr const char* kStudyGifUrlBase = "http://192.168.199.162:8003/api/study/gif?key=";
     static constexpr int kConnectId = 2;
     static constexpr int kHeartbeatIntervalMs = 30000;
     static constexpr int kStatusReportIntervalMs = 60000;
@@ -113,6 +113,8 @@ private:
     // 后台任务拉取并上屏口型 GIF（避免阻塞 MCP 响应）；每次课程开始调用
     void StartStudyGifAsync(const std::string& key);
     void StopStudyGif();
+    // 结束学习（单卡播完/课程播完/显式停止）后清理口型 GIF 预览，避免残留循环
+    void ClearStudyPreview();
     void RunStudyGif(const std::string& key, uint32_t generation);
     static void StudyGifTaskEntry(void* arg);
     // 课程连播：拉取 /api/study/course/next?after= 的下一课；成功返回 true 并输出 word/key

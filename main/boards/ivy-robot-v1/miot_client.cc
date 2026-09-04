@@ -359,15 +359,17 @@ void MiotClient::EngineControlMusic(const std::string& action) {
         // 显式停止会打断课程连播：禁止播完后自动续播下一课
         course_mode_.store(false);
         course_stopped_.store(true);
-        StopStudyGif();
+        ClearStudyPreview();
         music_player_->StopPlay();
     } else if (action == "next") {
         course_mode_.store(false);
         course_stopped_.store(true);
+        ClearStudyPreview();
         music_player_->Next();
     } else if (action == "previous") {
         course_mode_.store(false);
         course_stopped_.store(true);
+        ClearStudyPreview();
         music_player_->Previous();
     }
 }
@@ -879,7 +881,7 @@ bool MiotClient::ShowStudyGif(const std::string& key) {
         ESP_LOGW(TAG, "No network interface for study gif");
         return false;
     }
-    std::string url = std::string(kStudyGifUrlBase) + UrlEncode(key) + "/gif";
+    std::string url = std::string(kStudyGifUrlBase) + UrlEncode(key);
     auto http = network->CreateHttp(3);
     if (http == nullptr) {
         ESP_LOGE(TAG, "Failed to create http client for study gif");
@@ -960,6 +962,14 @@ void MiotClient::StopStudyGif() {
     study_gif_generation_.fetch_add(1);
 }
 
+void MiotClient::ClearStudyPreview() {
+    StopStudyGif();
+    auto* display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+    if (display != nullptr) {
+        display->SetPreviewImage(nullptr);
+    }
+}
+
 void MiotClient::StudyGifTaskEntry(void* arg) {
     auto* args = static_cast<StudyGifTaskArgs*>(arg);
     MiotClient* client = args->client;
@@ -985,6 +995,7 @@ void MiotClient::HandlePlaybackStopped() {
     auto& app = Application::GetInstance();
     if (!course_mode_.load() || course_stopped_.load()) {
         app.SetStudyCardPlaying(false);
+        ClearStudyPreview();
         RequestReconnect();
         return;
     }
@@ -1053,6 +1064,7 @@ void MiotClient::ContinueCourse(const std::string& after) {
     if (music_player_ == nullptr) {
         course_mode_.store(false);
         Application::GetInstance().SetStudyCardPlaying(false);
+        ClearStudyPreview();
         RequestReconnect();
         return;
     }
@@ -1062,6 +1074,7 @@ void MiotClient::ContinueCourse(const std::string& after) {
         course_mode_.store(false);
         course_stopped_.store(true);
         Application::GetInstance().SetStudyCardPlaying(false);
+        ClearStudyPreview();
         RequestReconnect();
         return;
     }
