@@ -887,7 +887,7 @@ bool MiotClient::ShowStudyGif(const std::string& key) {
         ESP_LOGE(TAG, "Failed to create http client for study gif");
         return false;
     }
-    http->SetTimeout(20000);
+    http->SetTimeout(40000);
     http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
     http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
     http->SetHeader("Accept-Encoding", "identity");
@@ -981,11 +981,22 @@ void MiotClient::StudyGifTaskEntry(void* arg) {
 }
 
 void MiotClient::RunStudyGif(const std::string& key, uint32_t generation) {
-    // 下载为当前课程（异代则丢弃结果，避免旧课 GIF 覆盖新课）。
-    if (study_gif_generation_.load() == generation && ShowStudyGif(key)) {
-        ESP_LOGI(TAG, "Study gif task committed: %s", key.c_str());
-    } else {
-        ESP_LOGW(TAG, "Study gif task skipped/stale: %s", key.c_str());
+    // 大体积口型 GIF(~1MB)与音频流并发下载，WiFi 争用可能导致偶发 stall
+    // 超过单次读超时而失败。整段重拉(每次新建连接)重试数次，代际过期即放弃。
+    const int kMaxAttempts = 3;
+    for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+        if (study_gif_generation_.load() != generation) {
+            ESP_LOGW(TAG, "Study gif task skipped/stale: %s", key.c_str());
+            return;
+        }
+        if (ShowStudyGif(key)) {
+            ESP_LOGI(TAG, "Study gif task committed: %s", key.c_str());
+            return;
+        }
+        ESP_LOGW(TAG, "Study gif attempt %d/%d failed: %s", attempt, kMaxAttempts, key.c_str());
+        if (attempt < kMaxAttempts) {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
     }
 }
 
