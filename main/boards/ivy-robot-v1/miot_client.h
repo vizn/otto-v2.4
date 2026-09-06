@@ -64,6 +64,9 @@ private:
     static constexpr const char* kStudyCardApiBase = "http://192.168.199.162:8001/api/study/card";
     static constexpr const char* kStudyCourseFindApiBase = "http://192.168.199.162:8001/api/study/course/find";
     static constexpr const char* kStudyGifUrlBase = "http://192.168.199.162:8003/api/study/gif?key=";
+    static constexpr const char* kStudyCartoonGifUrlBase = "http://192.168.199.162:8003/api/study/cartoon_gif?key=";
+    // 学习卡同步字幕：LRC（时间轴文本），播放时逐行更新屏幕底部字幕
+    static constexpr const char* kStudyLrcUrlBase = "http://192.168.199.162:8003/api/study/lrc?key=";
     static constexpr int kConnectId = 2;
     static constexpr int kHeartbeatIntervalMs = 30000;
     static constexpr int kStatusReportIntervalMs = 60000;
@@ -81,8 +84,17 @@ private:
     std::string last_course_key_;
     // 口型 GIF 后台任务代次：每次课程开始自增，异代下载结果丢弃
     std::atomic<uint32_t> study_gif_generation_{0};
-    // 口型 GIF 是否已成功上屏：播放前同步等待（限时 2s）保证 GIF 先于音频出现
+    // 口型 GIF 是否已成功上屏：播放前同步等待保证 GIF 先于音频出现
     std::atomic<bool> study_gif_shown_{false};
+    // 口型 GIF 三次尝试全部失败（音频不再等待，立即回退封面播放）
+    std::atomic<bool> study_gif_failed_{false};
+    // FaceFonics 课程（kc-001~109）需音频播两遍：第1遍对口型 GIF，第2遍对卡通 GIF。
+    // 其余课程仅播一遍（现状）。在 MCP 线程/MusicPlayer 任务/主任务间共享，用原子保护。
+    std::atomic<bool> study_facefonics_{false};
+    std::atomic<int> study_pass_{0};  // 0=未开始 1=第1遍(口型) 2=第2遍(卡通)
+    // 学习卡字幕：音频播放时按 LRC 时间轴逐行刷新屏幕底部字幕。
+    // lrc 任务代次，避免旧字幕显示重叠到下一课。
+    std::atomic<uint32_t> study_lrc_generation_{0};
 
     void Run();
     void ConnectAndServe();
@@ -110,22 +122,38 @@ private:
     // 学习卡片图片：下载词卡 JPG 并上屏（预览图，5 秒自动隐藏）；失败返回 false
     bool ShowStudyImage(const std::string& key);
     bool ShowStudyJpeg(const std::string& url, const char* label);
-    // 口型动画 GIF：下载课程 GIF 整段循环播放；失败返回 false（回退封面）
-    bool ShowStudyGif(const std::string& key);
+    // 口型/卡通动画 GIF：下载课程 GIF 整段循环播放；失败返回 false（回退封面）
+    // url 为完整资源地址（口型或卡通）。
+    bool ShowStudyGif(const std::string& url);
     // 使用 BSD socket 直连服务器下载口型 GIF（http://host:port/path），
     // 避免 HttpClient 逐 1500B 分块解析对大文件的极慢吞吐。成功返回 true 并填充输出缓冲。
     bool DownloadStudyGifHttp(const std::string& host, int port, const std::string& path,
                               std::vector<uint8_t>& out);
-    // 后台任务拉取并上屏口型 GIF（避免阻塞 MCP 响应）；每次课程开始调用
-    void StartStudyGifAsync(const std::string& key);
+    // 后台任务拉取并上屏 GIF（口型或卡通，避免阻塞 MCP 响应）；每次课程开始调用
+    void StartStudyGifAsync(const std::string& key, const std::string& url);
     void StopStudyGif();
-    // 独立任务：等待口型 GIF 上屏（限时 2s）后再播放课程音频，避免音频流抢占 WiFi
+    // 独立任务：等待 GIF 上屏后再播放课程音频，避免音频流抢占 WiFi
     void StartStudyPlayAfterGif(const std::string& key, const std::string& word);
     static void StudyPlayAfterGifTaskEntry(void* arg);
-    // 结束学习（单卡播完/课程播完/显式停止）后清理口型 GIF 预览，避免残留循环
+    // 结束学习（单卡播完/课程播完/显式停止）后清理 GIF 预览，避免残留循环
     void ClearStudyPreview();
-    void RunStudyGif(const std::string& key, uint32_t generation);
+    void RunStudyGif(const std::string& key, uint32_t generation, const std::string& url);
     static void StudyGifTaskEntry(void* arg);
+    // FaceFonics 课程（kc-001~109，有卡通 GIF 素材）返回 true；仅这类课程音频播两遍
+    static bool IsFaceFonicsCourse(const std::string& key);
+    // 学习卡播放中进入第 2 遍（切换卡通 GIF 后重播音频）；在 MusicPlayer 任务内由
+    // HandlePlaybackStopped 调用，负责清掉第 1 遍口型 GIF 并换卡通 GIF + 重播。
+    void StartSecondStudyPass();
+    // 音频开始播放时启动 LRC 字幕：后台任务拉取字幕并按时间轴刷新屏幕底部文本。
+    // 每遍音频（口型/卡通）播放前调用，timeout 限时于音频长度。
+    void StartStudyLrc(const std::string& key);
+    void StopStudyLrc();
+    static void StudyLrcTaskEntry(void* arg);
+    void RunStudyLrc(const std::string& key, uint32_t generation);
+    // 解析一行 LRC "[mm:ss.cs] text"；返回秒级时间并输出文本；非时间行返回 -1
+    static bool ParseLrcLine(const std::string& line, int& seconds, std::string& text);
+    // 更新屏幕底部字幕（空串隐藏）；主任务安全的薄包装
+    void ShowStudySubtitle(const std::string& text);
     // 课程连播：拉取 /api/study/course/next?after= 的下一课；成功返回 true 并输出 word/key
     bool FetchNextCourse(const std::string& after, std::string& word, std::string& key);
     // 随机学习卡片：GET /api/study/card -> {word,key}；成功返回 true

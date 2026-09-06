@@ -36,8 +36,16 @@
 static bool ParseDanceWithMusic(const std::string& text, std::string& song);
 
 namespace {
-// 口型 GIF 后台任务参数：记录课程 key 与代次，供异代丢弃
+// 口型/卡通 GIF 后台任务参数：记录课程 key、完整资源 url 与代次，供异代丢弃
 struct StudyGifTaskArgs {
+    MiotClient* client;
+    std::string key;
+    uint32_t generation;
+    std::string url;
+};
+
+// LRC 字幕后台任务参数
+struct StudyLrcTaskArgs {
     MiotClient* client;
     std::string key;
     uint32_t generation;
@@ -466,8 +474,15 @@ void MiotClient::EnginePlayStudy(const std::string& key, const std::string& word
     course_stopped_.store(!course);
     last_course_key_ = real_key;
     study_gif_shown_.store(false);
+    study_gif_failed_.store(false);
+    // 开始新课前清掉上一课可能残留的字幕
+    StopStudyLrc();
+    ShowStudySubtitle("");
+    // FaceFonics 课（kc-001~109）音频播两遍：第1遍对口型 GIF、第2遍对卡通 GIF
+    study_facefonics_.store(IsFaceFonicsCourse(real_key));
+    study_pass_.store(1);
     ShowStudyImage(real_key);
-    StartStudyGifAsync(real_key);
+    StartStudyGifAsync(real_key, std::string(kStudyGifUrlBase) + UrlEncode(real_key));
     // 先等口型 GIF 上屏（限时 2s）再开始音频：GIF 与音频并发拉取时音频流会抢占 WiFi，
     // 导致唯一的口型 GIF 下载被饿死横跨整个课程（实测 776KB 花了 92s）。
     // 由独立顺序播放任务执行，避免阻塞 MCP 响应与主任务。
@@ -503,8 +518,11 @@ void MiotClient::StudyPlayAfterGifTaskEntry(void* arg) {
     std::string key = args->key;
     std::string word = args->word;
     delete args;
-    // 等待口型 GIF 上屏（限时 2s）；超时则音频照常开始，GIF 由后台任务继续补显
-    for (int wait_ms = 0; wait_ms < 2000 && !client->study_gif_shown_.load();
+    // 等待口型 GIF 完成（上屏或三次都失败）。GIF 不依赖音频并发，通常 1~3s 内完成；
+    // 为网络异常兜底设上限，超时则音频照常开始，GIF 由后台任务继续补显。
+    const int kMaxGifWaitMs = 15000;
+    for (int wait_ms = 0; wait_ms < kMaxGifWaitMs &&
+                          !client->study_gif_shown_.load() && !client->study_gif_failed_.load();
          wait_ms += 50) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
@@ -514,6 +532,8 @@ void MiotClient::StudyPlayAfterGifTaskEntry(void* arg) {
     if (client->music_player_ != nullptr) {
         client->music_player_->PlayStudyCard(key);
     }
+    // 音频开始播放即启动 LRC 字幕：口型/卡通两遍都会走到这里（每遍重新开始）。
+    client->StartStudyLrc(key);
     vTaskDelete(nullptr);
 }
 
@@ -1042,13 +1062,12 @@ bool MiotClient::DownloadStudyGifHttp(const std::string& host, int port, const s
     return true;
 }
 
-bool MiotClient::ShowStudyGif(const std::string& key) {
-    if (key.empty()) {
+bool MiotClient::ShowStudyGif(const std::string& url) {
+    if (url.empty()) {
         return false;
     }
     auto& board = Board::GetInstance();
-    std::string url = std::string(kStudyGifUrlBase) + UrlEncode(key);
-    // 拆分固定前缀 http://host:port/path?key= -> host/port/path
+    // 拆分 http://host:port/path -> host/port/path
     const char* base = "http://";
     size_t host_start = strlen(base);
     std::string rest = url.substr(host_start);
@@ -1073,12 +1092,12 @@ bool MiotClient::ShowStudyGif(const std::string& key) {
     }
     std::vector<uint8_t> data;
     if (!DownloadStudyGifHttp(host, port, http_path, data)) {
-        ESP_LOGW(TAG, "Study gif download failed: %s", key.c_str());
+        ESP_LOGW(TAG, "Study gif download failed: %s", url.c_str());
         return false;
     }
     size_t content_length = data.size();
-    // 口型 GIF 可能超过默认预览图上限：放宽到 4MB，且要求至少 512KB 以避开噪声小图。
-    if (content_length < 512 * 1024 || content_length > 4 * 1024 * 1024) {
+    // 口型/卡通 GIF 可能超过默认预览图上限：放宽到 4MB，且要求至少 512KB 以避开噪声小图。
+    if (content_length < 256 * 1024 || content_length > 4 * 1024 * 1024) {
         ESP_LOGW(TAG, "Study gif invalid body length %u", (unsigned)content_length);
         return false;
     }
@@ -1095,16 +1114,16 @@ bool MiotClient::ShowStudyGif(const std::string& key) {
         return false;
     }
     bool ok = display->SetPreviewGif(std::move(data));
-    ESP_LOGI(TAG, "Study gif %s: %s", ok ? "shown" : "failed", key.c_str());
+    ESP_LOGI(TAG, "Study gif %s: %s", ok ? "shown" : "failed", url.c_str());
     return ok;
 }
 
-void MiotClient::StartStudyGifAsync(const std::string& key) {
-    if (key.empty()) {
+void MiotClient::StartStudyGifAsync(const std::string& key, const std::string& url) {
+    if (key.empty() || url.empty()) {
         return;
     }
     uint32_t generation = ++study_gif_generation_;
-    auto* args = new StudyGifTaskArgs{this, key, generation};
+    auto* args = new StudyGifTaskArgs{this, key, generation, url};
     BaseType_t ok = xTaskCreate(StudyGifTaskEntry, "study_gif", 4096, args, 6, nullptr);
     if (ok != pdPASS) {
         delete args;
@@ -1118,7 +1137,10 @@ void MiotClient::StopStudyGif() {
 
 void MiotClient::ClearStudyPreview() {
     StopStudyGif();
+    StopStudyLrc();
+    ShowStudySubtitle("");
     study_gif_shown_.store(false);
+    study_gif_failed_.store(false);
     auto* display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
     if (display != nullptr) {
         display->SetPreviewImage(nullptr);
@@ -1130,21 +1152,23 @@ void MiotClient::StudyGifTaskEntry(void* arg) {
     MiotClient* client = args->client;
     std::string key = args->key;
     uint32_t generation = args->generation;
+    std::string url = args->url;
     delete args;
-    client->RunStudyGif(key, generation);
+    client->RunStudyGif(key, generation, url);
     vTaskDelete(nullptr);
 }
 
-void MiotClient::RunStudyGif(const std::string& key, uint32_t generation) {
-    // 大体积口型 GIF(~1MB)与音频流并发下载，WiFi 争用可能导致偶发 stall
-    // 超过单次读超时而失败。整段重拉(每次新建连接)重试数次，代际过期即放弃。
+void MiotClient::RunStudyGif(const std::string& key, uint32_t generation,
+                             const std::string& url) {
+    // 大体积口型/卡通 GIF(~1MB) 下载与音频流不同时进行：播放任务会等 GIF 完成再开音频，
+    // 因此这里可独占 WiFi 快速拉取。多次整段重拉，代际过期即放弃。
     const int kMaxAttempts = 3;
     for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
         if (study_gif_generation_.load() != generation) {
             ESP_LOGW(TAG, "Study gif task skipped/stale: %s", key.c_str());
             return;
         }
-        if (ShowStudyGif(key)) {
+        if (ShowStudyGif(url)) {
             study_gif_shown_.store(true);
             ESP_LOGI(TAG, "Study gif task committed: %s", key.c_str());
             return;
@@ -1154,12 +1178,21 @@ void MiotClient::RunStudyGif(const std::string& key, uint32_t generation) {
             vTaskDelay(pdMS_TO_TICKS(2000));
         }
     }
+    study_gif_failed_.store(true);
 }
 
 void MiotClient::HandlePlaybackStopped() {
     // 在音乐播放器任务内调用：课程连播时把续播调度到主任务（屏幕/音频安全），
     // 其余情况与原逻辑一致——解除学习卡片静音并重连（模拟自动下线，恢复唤醒）。
     auto& app = Application::GetInstance();
+    // FaceFonics 课程（kc-001~109）音频播两遍：第1遍对口型 GIF 播完，先切到卡通 GIF
+    // 再重播第二遍，期间不退出播放状态/不连播下一课。第二遍播完才走正常收尾。
+    if (study_facefonics_.load() && study_pass_.load() == 1) {
+        StartSecondStudyPass();
+        return;
+    }
+    study_facefonics_.store(false);
+    study_pass_.store(0);
     if (!course_mode_.load() || course_stopped_.load()) {
         app.SetStudyCardPlaying(false);
         ClearStudyPreview();
@@ -1167,7 +1200,183 @@ void MiotClient::HandlePlaybackStopped() {
         return;
     }
     std::string after = last_course_key_;
+    // 音频播完立即清除旧课口型 GIF：避免切下一课的主任务调度/FetchNextCourse
+    // 网络延迟期间旧帧(180x180)残留闪一下；新课封面+GIF 由 ContinueCourse 重新上屏。
+    ClearStudyPreview();
     app.Schedule([this, after]() { ContinueCourse(after); });
+}
+
+void MiotClient::StartSecondStudyPass() {
+    // 由 HandlePlaybackStopped（MusicPlayer 任务内）调用：第1遍口型 GIF 音频播完，
+    // 清理口型帧并切到卡通 GIF，随后重播音频（第2遍）。期间保持学习状态。
+    study_pass_.store(2);
+    StopStudyGif();
+    study_gif_shown_.store(false);
+    study_gif_failed_.store(false);
+    std::string key = last_course_key_;
+    ESP_LOGI(TAG, "FaceFonics 第1遍播完，切换卡通 GIF 重播: %s", key.c_str());
+    StartStudyGifAsync(key, std::string(kStudyCartoonGifUrlBase) + UrlEncode(key));
+    StartStudyPlayAfterGif(key, "");
+}
+
+bool MiotClient::ParseLrcLine(const std::string& line, int& seconds, std::string& text) {
+    // 支持 "[mm:ss.cs]" 或 "[mm:ss.ccc]"；文本在时间标签后。
+    size_t pos = line.find(']');
+    if (line.rfind('[', 0) != 0 || pos == std::string::npos) {
+        text.clear();
+        return false;
+    }
+    const std::string tag = line.substr(1, pos - 1);
+    int sec_piece = -1;
+    int m = 0, s = 0, cs = 0;
+    if (sscanf(tag.c_str(), "%d:%d.%d", &m, &s, &cs) == 3) {
+        sec_piece = m * 60 + s;
+    } else if (sscanf(tag.c_str(), "%d:%d", &m, &s) == 2) {
+        sec_piece = m * 60 + s;
+    }
+    if (sec_piece < 0) {
+        text.clear();
+        return false;
+    }
+    seconds = sec_piece;
+    text = line.substr(pos + 1);
+    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+        text.erase(text.begin());
+    }
+    return true;
+}
+
+void MiotClient::ShowStudySubtitle(const std::string& text) {
+    auto& app = Application::GetInstance();
+    std::string msg = text;
+    app.Schedule([msg]() {
+        auto* display = Board::GetInstance().GetDisplay();
+        if (display != nullptr) {
+            display->SetChatMessage("system", msg.empty() ? nullptr : msg.c_str());
+        }
+    });
+}
+
+void MiotClient::StartStudyLrc(const std::string& key) {
+    if (key.empty()) {
+        return;
+    }
+    uint32_t generation = ++study_lrc_generation_;
+    auto* args = new StudyLrcTaskArgs{this, key, generation};
+    BaseType_t ok = xTaskCreate(StudyLrcTaskEntry, "study_lrc", 4096, args, 4, nullptr);
+    if (ok != pdPASS) {
+        delete args;
+        ESP_LOGE(TAG, "Study lrc task create failed");
+    }
+}
+
+void MiotClient::StopStudyLrc() {
+    study_lrc_generation_.fetch_add(1);
+}
+
+void MiotClient::StudyLrcTaskEntry(void* arg) {
+    auto* args = static_cast<StudyLrcTaskArgs*>(arg);
+    MiotClient* client = args->client;
+    std::string key = args->key;
+    uint32_t generation = args->generation;
+    delete args;
+    client->RunStudyLrc(key, generation);
+    vTaskDelete(nullptr);
+}
+
+// LRC 解析：行集合（时间行 + 文本行）。文本紧跟时间行 = 该时刻起显示。
+void MiotClient::RunStudyLrc(const std::string& key, uint32_t generation) {
+    if (study_lrc_generation_.load() != generation) {
+        return;
+    }
+    auto& board = Board::GetInstance();
+    auto* network = board.GetNetwork();
+    if (network == nullptr) {
+        return;
+    }
+    std::string url = std::string(kStudyLrcUrlBase) + UrlEncode(key);
+    auto http = network->CreateHttp(3);
+    if (http == nullptr) {
+        return;
+    }
+    http->SetTimeout(15000);
+    http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
+    if (!http->Open("GET", url)) {
+        ESP_LOGW(TAG, "Study lrc open failed: %s", url.c_str());
+        http->Close();
+        return;
+    }
+    int status = http->GetStatusCode();
+    if (status != 200) {
+        ESP_LOGW(TAG, "Study lrc http status %d", status);
+        http->Close();
+        return;
+    }
+    std::string body = http->ReadAll();
+    http->Close();
+    ESP_LOGI(TAG, "Study lrc %s: %d bytes", key.c_str(), (int)body.size());
+    if (body.empty()) {
+        return;
+    }
+
+    // 解析为 (time_sec, text) 有序列表
+    std::vector<std::pair<int, std::string>> cues;
+    std::string last_text;
+    std::string line;
+    for (size_t i = 0; i <= body.size(); ++i) {
+        char c = (i < body.size()) ? body[i] : '\n';
+        if (c != '\n' && i < body.size()) {
+            line.push_back(c);
+            continue;
+        }
+        // 处理 \r
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        int t = 0;
+        std::string txt;
+        if (ParseLrcLine(line, t, txt)) {
+            if (!txt.empty()) {
+                cues.emplace_back(t, txt);
+            }
+        }
+        line.clear();
+    }
+    if (cues.empty()) {
+        ESP_LOGW(TAG, "Study lrc empty cues: %s", key.c_str());
+        return;
+    }
+    ESP_LOGI(TAG, "Study lrc %s: %u cues", key.c_str(), (unsigned)cues.size());
+
+    // 50ms tick 按时间轴推进，直到音频结束（取最后 cue 时间 + 5s 上限）。
+    const int64_t t0 = esp_timer_get_time() / 1000;
+    const int kEndMs = (cues.back().first + 5) * 1000;
+    size_t idx = 0;
+    std::string showed;
+    while (study_lrc_generation_.load() == generation) {
+        int64_t elapsed = esp_timer_get_time() / 1000 - t0;
+        if (elapsed >= kEndMs) {
+            break;
+        }
+        // 推进到应显示的最新 cue
+        int64_t now_ms = elapsed;
+        size_t next = idx;
+        while (next < cues.size() && (int64_t)cues[next].first * 1000 <= now_ms) {
+            next++;
+        }
+        if (next > 0 && (next != idx)) {
+            const std::string& tgt = cues[next - 1].second;
+            if (tgt != showed) {
+                showed = tgt;
+                ESP_LOGI(TAG, "Study lrc cue: %dms -> %s", (int)now_ms, tgt.c_str());
+                ShowStudySubtitle(tgt);
+            }
+        }
+        idx = next;
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    // 音频播完清字幕（由 ClearStudyPreview 决定是否再清；此处直接隐藏）
+    ShowStudySubtitle("");
 }
 
 bool MiotClient::FetchNextCourse(const std::string& after, std::string& word, std::string& key) {
@@ -1248,9 +1457,32 @@ void MiotClient::ContinueCourse(const std::string& after) {
     last_course_key_ = key;
     Application::GetInstance().SetStudyCardPlaying(true);
     study_gif_shown_.store(false);
+    study_gif_failed_.store(false);
+    StopStudyLrc();
+    ShowStudySubtitle("");
+    study_facefonics_.store(IsFaceFonicsCourse(key));
+    study_pass_.store(1);
     ShowStudyImage(key);
-    StartStudyGifAsync(key);
+    StartStudyGifAsync(key, std::string(kStudyGifUrlBase) + UrlEncode(key));
     StartStudyPlayAfterGif(key, word);
+}
+
+bool MiotClient::IsFaceFonicsCourse(const std::string& key) {
+    // FaceFonics 课程键为 kc-001 ~ kc-109（有口型+卡通 GIF 素材）。其余 kc-1xx
+    // （单词歌/第三只耳朵/泡脑子）无卡通素材，音频仅播一遍。
+    if (key.size() != 6 || key.compare(0, 3, "kc-") != 0) {
+        return false;
+    }
+    for (size_t i = 3; i < key.size(); ++i) {
+        if (key[i] < '0' || key[i] > '9') {
+            return false;
+        }
+    }
+    int num = 0;
+    for (size_t i = 3; i < key.size(); ++i) {
+        num = num * 10 + (key[i] - '0');
+    }
+    return num >= 1 && num <= 109;
 }
 
 // === MCP 媒体工具入口：直接调用媒体引擎方法，不构造命令 JSON ===
