@@ -1034,7 +1034,9 @@ void Application::SetListeningMode(ListeningMode mode) {
 }
 
 ListeningMode Application::GetDefaultListeningMode() const {
-    return aec_mode_ == kAecOff ? kListeningModeAutoStop : kListeningModeRealtime;
+    // 统一 AutoStop：说话(TTS/音乐)时关闭上行语音、仅保留唤醒词检测，
+    // 唤醒词命中即可打断当前 TTS/音乐并进入交互；避免播放期间被误识别。
+    return kListeningModeAutoStop;
 }
 
 void Application::Reboot() {

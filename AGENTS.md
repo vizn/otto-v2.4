@@ -2,7 +2,7 @@
 
 ## Project
 
-XiaoZhi is an ESP-IDF C/C++ voice-assistant firmware supporting many chips, boards, displays, audio devices, and network transports. A build selects exactly one board implementation.
+Ivy Robot is an ESP-IDF C/C++ voice-assistant firmware supporting many chips, boards, displays, audio devices, and network transports. A build selects exactly one board implementation.
 
 Use ESP-IDF v6.0.2 when possible. IDF 5.5.x is retained only for documented legacy boards.
 

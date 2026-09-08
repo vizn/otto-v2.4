@@ -2,14 +2,14 @@
     "target": "esp32s3",
     "builds": [
         {
-            "name": "ivy-robot-v1",
+            "name": "ivy-robot-v2",
             "sdkconfig_append": [
                 "CONFIG_HTTPD_WS_SUPPORT=y",
                 "CONFIG_ESPTOOLPY_FLASHMODE_DIO=y",
                 "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE=y",
                 "CONFIG_MBEDTLS_CUSTOM_CERTIFICATE_BUNDLE_PATH=\"certs\"",
-                "CONFIG_OTA_URL=\"https://xiaozhi.zillionairetravel.com/xiaozhi/ota/\"",
-                "CONFIG_OTA_URL_LAN=\"http://192.168.199.162:8003/xiaozhi/ota/\"",
+                "CONFIG_OTA_URL=\"https://xiaozhi.zillionairetravel.com/ivy/ota/\"",
+                "CONFIG_OTA_URL_LAN=\"http://192.168.199.162:8003/ivy/ota/\"",
                 "CONFIG_USE_AFE_WAKE_WORD=y",
                 "# CONFIG_SR_WN_WN9_NIHAOXIAOZHI_TTS is not set",
                 "CONFIG_SR_WN_WN9_HEYIVY_TTS2=y"

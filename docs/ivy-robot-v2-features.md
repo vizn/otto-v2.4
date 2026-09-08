@@ -1,6 +1,6 @@
-# ivy-robot-v1 定制功能说明
+# ivy-robot-v2 定制功能说明
 
-本文档记录 ivy-robot-v1 开发板上已完成的自定义功能，包括固件改动与服务器端功能。
+本文档记录 ivy-robot-v2 开发板上已完成的自定义功能，包括固件改动与服务器端功能。
 
 ## 固件改动
 
@@ -33,7 +33,7 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 ### 3. 英文舞蹈指令识别
 
-修改 `main/boards/ivy-robot-v1/miot_client.cc`，当服务器通过 MIOT 下发歌曲时，同步检查用户原话（STT 原文）是否含舞蹈意图关键词。
+修改 `main/boards/ivy-robot-v2/miot_client.cc`，当服务器通过 MIOT 下发歌曲时，同步检查用户原话（STT 原文）是否含舞蹈意图关键词。
 
 新增英文关键词匹配（大小写不敏感）：
 
@@ -48,7 +48,7 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 ### 4. 连续舞蹈动作编排
 
-修改 `main/boards/ivy-robot-v1/otto_controller.cc`，新增 `DanceMove` 结构体和 `QueueNextContinuousDanceStep()` 方法，将单一 SafeGroove 律动替换为多动作轮播编排。
+修改 `main/boards/ivy-robot-v2/otto_controller.cc`，新增 `DanceMove` 结构体和 `QueueNextContinuousDanceStep()` 方法，将单一 SafeGroove 律动替换为多动作轮播编排。
 
 编排序列（共 21 个条目，循环播放）：
 
@@ -85,7 +85,7 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 ### 5. 功夫英语学习卡片/课程：口型动画 GIF 同步播放
 
-在 `main/boards/ivy-robot-v1/miot_client.cc` 实现学习卡片/课程连播链路，口型动画以 GIF 形式与音频同步上屏。
+在 `main/boards/ivy-robot-v2/miot_client.cc` 实现学习卡片/课程连播链路，口型动画以 GIF 形式与音频同步上屏。
 
 **端点常量**（`miot_client.h`）：
 
@@ -288,7 +288,7 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 ### 验证（2026-08-21 固件）
 
-- 构建通过（ESP-IDF v6.0.2），烧录 `ivy-robot-v1` 后启动日志确认 8 个 `self.ivy.*` 媒体工具
+- 构建通过（ESP-IDF v6.0.2），烧录 `ivy-robot-v2` 后启动日志确认 8 个 `self.ivy.*` 媒体工具
   全部注册（`MCP 媒体工具(self.ivy.*)注册完成`），无 error/panic；
   `MiotClient` 连接 `ws://192.168.199.162:8003/ws` 正常、`Hey Ivy` 唤醒词正常。
 - 工具回调复用 MIOT 既有代码路径，行为与 MIOT 下发等价。
@@ -341,7 +341,7 @@ idf.py -p /dev/ttyACM0 flash
 
 ## 上游同步基线（2026-08-20）
 
-ivy-robot-v1 与上游 `78/xiaozhi-esp32` 的关系已通过 3-way 比对确认（基线 commit `361ab01` 的板子文件作为共同祖先，对比上游 tag `v2.4.2`）。
+ivy-robot 固件与上游 `78/xiaozhi-esp32` 的关系已通过 3-way 比对确认（基线 commit `361ab01` 的板子文件作为共同祖先，对比上游 tag `v2.4.2`）。
 
 结论：**本板代码已与上游 v2.4.2 基本对齐，无需功能性合并**。差异仅分为两类，均为有意为之：
 

@@ -561,8 +561,8 @@ choice BOARD_TYPE
     config BOARD_TYPE_IVY_ROBOT
         bool "ivyRobot"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_IVY_ROBOT_V1
-        bool "ivyRobot V1"
+    config BOARD_TYPE_IVY_ROBOT_V2
+        bool "ivyRobot V2"
         depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_ELECTRON_BOT
         bool "electronBot"
