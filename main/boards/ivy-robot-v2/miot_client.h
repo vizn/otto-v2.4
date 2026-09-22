@@ -37,11 +37,13 @@ public:
     // === MCP 媒体工具入口：以与服务器下发 MIOT 指令完全相同的 JSON 触发既有处理逻辑 ===
     // 复用 HandleControlCommand，不复制播放逻辑，保证 MIOT 与 MCP 行为一致。
     void McpPlayMusic(const std::string& keyword);
-    void McpControlPlayback(const std::string& action);  // play|pause|next|previous|stop
+    void McpControlPlayback(const std::string& action);
     void McpPlayAlbum(const std::string& album);
     void McpPlayRadio(const std::string& station, const std::string& name = "");
     void McpPlayWeather(const std::string& city, const std::string& city_enc = "");
     void McpPlayStudy(const std::string& key, const std::string& word = "", bool course = false);
+    void McpPlayUrl(const std::string& url);
+    void McpPlayContinuous(const std::string& keyword);
 
     // 主动断开当前连接并重连（模拟自动下线），用于音乐播放结束后重置唤醒状态
     void RequestReconnect();
@@ -105,12 +107,14 @@ private:
     // === 媒体引擎方法（MCP 与 MIOT /ws 共用，去除对命令字符串派发的依赖）===
     // MCP 工具直接调用这些方法；HandleControlCommand 也转发到这里，保证两条链路行为一致。
     void EnginePlayMusic(const std::string& keyword);
-    void EngineControlMusic(const std::string& action);  // play|pause|next|previous|stop
+    void EngineControlMusic(const std::string& action);
     void EnginePlayAlbum(const std::string& album);
     void EnginePlayRadio(const std::string& station, const std::string& name);
-    void EngineShowChat(const std::string& text);
     void EnginePlayWeather(const std::string& city, const std::string& city_enc);
     void EnginePlayStudy(const std::string& key, const std::string& word, bool course);
+    void EnginePlayUrl(const std::string& url);
+    void EnginePlayContinuous(const std::string& keyword);
+    void EngineShowChat(const std::string& text);
     void HandleHeartbeatResponse();
     // 向服务器上报设备实时状态（版本/音量/亮度/内存/播放状态），供 Web 控制台展示
     void SendDeviceStatus(WebSocket* ws);

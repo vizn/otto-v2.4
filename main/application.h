@@ -129,6 +129,18 @@ public:
     bool IsStudyCardPlaying() const { return study_card_playing_; }
 
     /**
+     * 音乐/电台/天气播放状态标志（线程安全）。
+     * 播放期间设备不向服务器上报音频、不播放服务器下发的 LLM 音频，
+     * 从而在本地媒体播放过程中禁用 LLM 对话，避免音乐与 TTS 重叠。
+     */
+    void SetMediaPlaying(bool playing) { media_playing_ = playing; }
+    bool IsMediaPlaying() const { return media_playing_; }
+    void SetRemoteTtsMediaCallbacks(std::function<bool()> pause, std::function<void()> resume) {
+        pause_media_for_remote_tts_ = std::move(pause);
+        resume_media_after_remote_tts_ = std::move(resume);
+    }
+
+    /**
      * Get the most recent user speech text (from stt messages).
      * Combines a sliding window of recent stt segments so that an utterance
      * split across multiple stt messages (e.g. "边跳舞" + "电放音乐") can be
@@ -167,7 +179,14 @@ private:
     bool assets_version_checked_ = false;
     bool play_popup_on_listening_ = false;  // Flag to play popup sound after state changes to listening
     bool pending_listening_start_ = false;  // Waiting for playback to drain before starting listening (auto mode)
+    bool remote_tts_playback_pending_ = false;
+    bool media_paused_by_remote_tts_ = false;
     std::atomic<bool> study_card_playing_ = false;  // 学习卡片播放期间禁用 LLM 对话
+    std::atomic<bool> media_playing_ = false;       // 音乐/电台/天气播放期间禁用 LLM 对话
+    std::atomic<bool> remote_tts_active_ = false;
+    std::atomic<int> remote_tts_audio_packets_ = 0;
+    std::function<bool()> pause_media_for_remote_tts_;
+    std::function<void()> resume_media_after_remote_tts_;
     int clock_ticks_ = 0;
     TaskHandle_t activation_task_handle_ = nullptr;
 
@@ -197,6 +216,7 @@ private:
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
+    void CompleteRemoteTtsPlayback();
     
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);

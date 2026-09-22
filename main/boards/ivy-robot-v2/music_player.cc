@@ -17,6 +17,8 @@
 #include "network_interface.h"
 #include "system_info.h"
 #include "application.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
 
 #define TAG "MusicPlayer"
 
@@ -81,6 +83,18 @@ void MusicPlayer::PlayStudyCard(const std::string& key) {
     Enqueue(cmd);
 }
 
+void MusicPlayer::PlayUrl(const std::string& url) {
+    Command cmd{CommandType::kPlayUrl, {0}};
+    strncpy(cmd.payload, url.c_str(), sizeof(cmd.payload) - 1);
+    Enqueue(cmd);
+}
+
+void MusicPlayer::PlayContinuous(const std::string& keyword) {
+    Command cmd{CommandType::kPlayContinuous, {0}};
+    strncpy(cmd.payload, keyword.c_str(), sizeof(cmd.payload) - 1);
+    Enqueue(cmd);
+}
+
 void MusicPlayer::PlayPlaylist(const std::vector<std::string>& keywords) {
     if (keywords.empty()) {
         return;
@@ -109,6 +123,20 @@ void MusicPlayer::Pause() {
 void MusicPlayer::Resume() {
     Command cmd{CommandType::kResume, {0}};
     Enqueue(cmd);
+}
+
+bool MusicPlayer::PauseForRemoteTts() {
+    if (!playing_ || paused_.exchange(true)) {
+        return false;
+    }
+    Pause();
+    return true;
+}
+
+void MusicPlayer::ResumeFromRemoteTts() {
+    if (playing_ && paused_) {
+        Resume();
+    }
 }
 
 void MusicPlayer::StopPlay() {
@@ -174,6 +202,20 @@ void MusicPlayer::Run() {
                 pending_playlist_ = false;
                 playlist_mode_ = false;
                 PlayStream(cmd.payload, StreamMode::kStudy);
+                break;
+            case CommandType::kPlayUrl:
+                // 直接播放 URL（跳过关键词解析）
+                single_play_requested_ = false;
+                pending_playlist_ = false;
+                playlist_mode_ = false;
+                PlayStream(cmd.payload, StreamMode::kMusic);
+                break;
+            case CommandType::kPlayContinuous:
+                // 连续播放模式：播完自动从服务器获取下一首
+                single_play_requested_ = false;
+                pending_playlist_ = false;
+                playlist_mode_ = false;
+                PlayContinuousInternal(cmd.payload);
                 break;
             case CommandType::kPlaylist: {
                 std::vector<std::string>* pl =
@@ -267,6 +309,99 @@ void MusicPlayer::PlayPlaylistInternal(std::vector<std::string> playlist) {
     }
     playlist_mode_ = false;
     NotifyStopped();
+}
+
+// 连续播放模式：播完当前歌曲后自动从服务器获取下一首
+void MusicPlayer::PlayContinuousInternal(const std::string& keyword) {
+    continuous_play_mode_ = true;
+    stop_requested_ = false;
+    std::string current_keyword = keyword;
+    
+    while (continuous_play_mode_ && running_ && !stop_requested_) {
+        // 播放当前歌曲
+        ShowMessageOnScreen(DisplaySongName(current_keyword).c_str());
+        PlayStream(current_keyword, StreamMode::kMusic);
+        
+        // 检查是否被中断（切歌/停止/新播放请求）
+        if (stop_requested_ || single_play_requested_ || pending_playlist_) {
+            break;
+        }
+        
+        // 从服务器获取下一首歌曲
+        std::string next_keyword = FetchNextSongFromServer();
+        if (next_keyword.empty()) {
+            ESP_LOGW(TAG, "连续播放: 服务器未返回下一首歌曲");
+            break;
+        }
+        current_keyword = next_keyword;
+    }
+    
+    continuous_play_mode_ = false;
+    NotifyStopped();
+}
+
+// 从服务器获取下一首随机歌曲
+std::string MusicPlayer::FetchNextSongFromServer() {
+    const char* server_url = "http://192.168.199.162:8003/api/music/next?count=1";
+    
+    esp_http_client_config_t config = {};
+    config.url = server_url;
+    config.timeout_ms = 5000;
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) {
+        ESP_LOGE(TAG, "连续播放: HTTP 客户端初始化失败");
+        return "";
+    }
+    
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "连续播放: HTTP 连接失败: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return "";
+    }
+    
+    esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    
+    if (status != 200) {
+        ESP_LOGE(TAG, "连续播放: HTTP 状态码: %d", status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return "";
+    }
+    
+    std::string response;
+    char buffer[512];
+    int read_len;
+    while ((read_len = esp_http_client_read(client, buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[read_len] = '\0';
+        response += buffer;
+    }
+    
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    
+    // 解析 JSON 响应：{"songs": ["keyword1", "keyword2", ...]}
+    cJSON* json = cJSON_Parse(response.c_str());
+    if (!json) {
+        ESP_LOGE(TAG, "连续播放: JSON 解析失败");
+        return "";
+    }
+    
+    cJSON* songs = cJSON_GetObjectItem(json, "songs");
+    if (!cJSON_IsArray(songs) || cJSON_GetArraySize(songs) == 0) {
+        ESP_LOGE(TAG, "连续播放: 无歌曲列表");
+        cJSON_Delete(json);
+        return "";
+    }
+    
+    cJSON* first_song = cJSON_GetArrayItem(songs, 0);
+    std::string result = cJSON_GetStringValue(first_song);
+    cJSON_Delete(json);
+    
+    ESP_LOGI(TAG, "连续播放: 获取下一首: %s", result.c_str());
+    return result;
 }
 
 // 屏幕显示用歌曲名：去掉专辑路径、扩展名与曲序前缀（如 "64. " / "3.音频-"）。
@@ -367,6 +502,9 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
     // 播放开始：暂停唤醒词检测，防止本地音乐播放被 LLM/唤醒语音打断
     SuspendWakeWordForPlayback();
 
+    // 设置媒体播放标志，禁用 LLM 对话（出站音频丢弃 + 入站 TTS 拦截）
+    Application::GetInstance().SetMediaPlaying(true);
+
     // 空闲超时后 AudioService 会关闭 I2S 输出(掉电)；本地播放需自行打开，
     // 否则 i2s_channel_write 会在未运行的通道上永久阻塞导致无声。
     bool output_enabled_by_music = false;
@@ -385,11 +523,18 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
         : (active_mode == StreamMode::kStudy)   ? kStudyStreamUrlBase
                                                 : kStreamUrlBase;
 
+    bool is_direct_url = (keyword_to_play.find("://") != std::string::npos);
+
     while (restart && running_ && !stop_requested_) {
             restart = false;
-            std::string url = url_base + UrlEncode(keyword_to_play);
-            // 携带设备 MAC，便于服务端回传真实歌名（修正 random/模糊匹配导致的屏显不一致）
-            url += "&mac=" + UrlEncode(SystemInfo::GetMacAddress());
+            std::string url;
+            if (is_direct_url) {
+                url = keyword_to_play;
+            } else {
+                url = url_base + UrlEncode(keyword_to_play);
+                // 携带设备 MAC，便于服务端回传真实歌名（修正 random/模糊匹配导致的屏显不一致）
+                url += "&mac=" + UrlEncode(SystemInfo::GetMacAddress());
+            }
             const char* mode_str = (mode == StreamMode::kMusic) ? "music"
                                : (mode == StreamMode::kRadio) ? "radio"
                                : (mode == StreamMode::kStudy) ? "study" : "weather";
@@ -471,6 +616,15 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                         ESP_LOGI(TAG, "Message: %.120s", cmd.payload);
                         ShowMessageOnScreen(cmd.payload);
                         break;
+                    case CommandType::kPlayUrl:
+                        // 直接播放 URL：记录 URL，停止当前流后重新开始
+                        single_play_requested_ = true;
+                        pending_playlist_ = false;
+                        playlist_mode_ = false;
+                        keyword_to_play = cmd.payload;
+                        restart = true;
+                        stop_requested_ = true;
+                        break;
                     case CommandType::kPlay:
                         // 新歌曲命令：记录关键词，停止当前流后重新开始
                         single_play_requested_ = true;  // 接管歌单
@@ -496,6 +650,13 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                     case CommandType::kPlayStudyCard:
                         active_mode = StreamMode::kStudy;
                         url_base = kStudyStreamUrlBase;
+                        keyword_to_play = cmd.payload;
+                        restart = true;
+                        stop_requested_ = true;
+                        break;
+                    case CommandType::kPlayContinuous:
+                        // 连续播放模式：记录关键词，停止当前流后重新开始
+                        single_play_requested_ = true;
                         keyword_to_play = cmd.payload;
                         restart = true;
                         stop_requested_ = true;
@@ -699,6 +860,8 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
 void MusicPlayer::NotifyStopped() {
     // 播放彻底结束：恢复唤醒词检测，允许用户再次用语音唤醒交互
     ResumeWakeWordForPlayback();
+    // 清除媒体播放标志，恢复 LLM 对话
+    Application::GetInstance().SetMediaPlaying(false);
     if (on_stopped_ != nullptr) {
         on_stopped_();
     }

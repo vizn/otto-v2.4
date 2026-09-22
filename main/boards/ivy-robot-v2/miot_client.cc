@@ -18,6 +18,7 @@
 #include "board.h"
 #include "application.h"
 #include "display.h"
+#include "wifi_manager.h"
 #include "display/lcd_display.h"
 #include "display/lvgl_display/lvgl_display.h"
 #include "display/lvgl_display/lvgl_image.h"
@@ -621,6 +622,32 @@ void MiotClient::SendDeviceStatus(WebSocket* ws) {
     if (music_player_ != nullptr) {
         cJSON_AddBoolToObject(data, "music_playing", music_player_->IsPlaying());
     }
+
+    int level = 0;
+    bool charging = false, discharging = false;
+    if (board.GetBatteryLevel(level, charging, discharging)) {
+        auto* battery = cJSON_CreateObject();
+        cJSON_AddNumberToObject(battery, "level", level);
+        cJSON_AddBoolToObject(battery, "charging", charging);
+        cJSON_AddItemToObject(data, "battery", battery);
+    }
+
+    auto& wifi = WifiManager::GetInstance();
+    auto* network = cJSON_CreateObject();
+    cJSON_AddStringToObject(network, "type", "wifi");
+    cJSON_AddStringToObject(network, "ssid", wifi.GetSsid().c_str());
+    int rssi = wifi.GetRssi();
+    const char* signal = rssi >= -60 ? "strong" : (rssi >= -70 ? "medium" : "weak");
+    cJSON_AddStringToObject(network, "signal", signal);
+    cJSON_AddItemToObject(data, "network", network);
+
+    float temp = 0.0f;
+    if (board.GetTemperature(temp)) {
+        auto* chip = cJSON_CreateObject();
+        cJSON_AddNumberToObject(chip, "temperature", temp);
+        cJSON_AddItemToObject(data, "chip", chip);
+    }
+
     cJSON_AddItemToObject(root, "data", data);
 
     char* msg = cJSON_PrintUnformatted(root);
@@ -1508,4 +1535,24 @@ void MiotClient::McpPlayWeather(const std::string& city, const std::string& city
 
 void MiotClient::McpPlayStudy(const std::string& key, const std::string& word, bool course) {
     EnginePlayStudy(key, word, course);
+}
+
+void MiotClient::McpPlayUrl(const std::string& url) {
+    EnginePlayUrl(url);
+}
+
+void MiotClient::McpPlayContinuous(const std::string& keyword) {
+    EnginePlayContinuous(keyword);
+}
+
+void MiotClient::EnginePlayUrl(const std::string& url) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "播放URL: [%s]", url.c_str());
+    music_player_->PlayUrl(url);
+}
+
+void MiotClient::EnginePlayContinuous(const std::string& keyword) {
+    if (music_player_ == nullptr) return;
+    ESP_LOGI(TAG, "连续播放: [%s]", keyword.c_str());
+    music_player_->PlayContinuous(keyword);
 }

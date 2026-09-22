@@ -134,6 +134,9 @@ private:
         music_player_ = new MusicPlayer();
         music_player_->SetAudioCodec(GetAudioCodec());
         music_player_->Start();
+        Application::GetInstance().SetRemoteTtsMediaCallbacks(
+            [this]() { return music_player_ != nullptr && music_player_->PauseForRemoteTts(); },
+            [this]() { if (music_player_ != nullptr) music_player_->ResumeFromRemoteTts(); });
 
         miot_client_ = new MiotClient();
         miot_client_->SetMusicPlayer(music_player_);
@@ -228,6 +231,26 @@ private:
             [this](const PropertyList& properties) -> ReturnValue {
                 std::string text = properties["text"].value<std::string>();
                 if (!text.empty() && music_player_ != nullptr) music_player_->ShowMessage(text);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.play_url",
+            "直接播放音频URL。url: 音频文件的完整URL地址。",
+            PropertyList({Property("url", kPropertyTypeString, "")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string url = properties["url"].value<std::string>();
+                if (url.empty()) return "缺少 url 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayUrl(url);
+                return true;
+            });
+
+        mcp_server.AddTool("self.ivy.play_continuous",
+            "连续播放音乐模式。keyword: 首首歌曲关键词；播放后自动从服务器获取下一首，直到手动停止。",
+            PropertyList({Property("keyword", kPropertyTypeString, "")}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string keyword = properties["keyword"].value<std::string>();
+                if (keyword.empty()) return "缺少 keyword 参数";
+                if (miot_client_ != nullptr) miot_client_->McpPlayContinuous(keyword);
                 return true;
             });
 

@@ -869,6 +869,41 @@ public:
                                return status;
                            });                           
 
+        mcp_server.AddTool("self.config.get",
+            "从NVS读取设备配置项。namespace为NVS命名空间，key为键名。",
+            PropertyList({
+                Property("namespace", kPropertyTypeString),
+                Property("key", kPropertyTypeString)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                auto ns = properties["namespace"].value<std::string>();
+                auto key = properties["key"].value<std::string>();
+                Settings settings(ns, false);
+                std::string val = settings.GetString(key, "");
+                cJSON* result = cJSON_CreateObject();
+                cJSON_AddStringToObject(result, "namespace", ns.c_str());
+                cJSON_AddStringToObject(result, "key", key.c_str());
+                cJSON_AddStringToObject(result, "value", val.c_str());
+                return result;
+            });
+
+        mcp_server.AddTool("self.config.set",
+            "将设备配置项写入NVS持久化存储。namespace为NVS命名空间，key为键名，value为值。",
+            PropertyList({
+                Property("namespace", kPropertyTypeString),
+                Property("key", kPropertyTypeString),
+                Property("value", kPropertyTypeString)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                auto ns = properties["namespace"].value<std::string>();
+                auto key = properties["key"].value<std::string>();
+                auto val = properties["value"].value<std::string>();
+                Settings settings(ns, true);
+                settings.SetString(key, val);
+                ESP_LOGI(TAG, "NVS写入: %s/%s = %s", ns.c_str(), key.c_str(), val.c_str());
+                return true;
+            });
+
         ESP_LOGI(TAG, "MCP工具注册完成");
     }
 

@@ -64,6 +64,10 @@ void Protocol::SendAbortSpeaking(AbortReason reason) {
     SendText(message);
 }
 
+void Protocol::SendTtsPlaybackCompleted() {
+    SendText("{\"session_id\":\"" + session_id_ + "\",\"type\":\"tts_playback\",\"state\":\"completed\"}");
+}
+
 void Protocol::SendWakeWordDetected(const std::string& wake_word) {
     std::string json = "{\"session_id\":\"" + session_id_ +
                        "\",\"type\":\"listen\",\"state\":\"detect\",\"text\":\"" + wake_word +

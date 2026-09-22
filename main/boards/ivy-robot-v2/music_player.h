@@ -2,6 +2,7 @@
 #define MUSIC_PLAYER_H
 
 #include <stdint.h>
+#include <atomic>
 #include <esp_ae_rate_cvt.h>
 #include <esp_audio_types.h>
 #include <freertos/FreeRTOS.h>
@@ -37,11 +38,17 @@ public:
     void PlayWeather(const std::string& city);
     // 学习卡片：播放本地词库一张单词卡的音频（短音频，播完自然结束）
     void PlayStudyCard(const std::string& key);
+    // 直接播放 URL：跳过关键词解析，直接播放指定的音频 URL
+    void PlayUrl(const std::string& url);
+    // 连续播放模式：播完自动从服务器获取下一首，直到手动停止
+    void PlayContinuous(const std::string& keyword);
     // 歌单连播：按次序逐首播放 keywords（每首经 /api/music/stream?song=<kw>）。
     // 全部播完（或被停止）后触发 on_stopped 回调；播放中可再入队 next/previous/stop。
     void PlayPlaylist(const std::vector<std::string>& keywords);
     void Pause();
     void Resume();
+    bool PauseForRemoteTts();
+    void ResumeFromRemoteTts();
     void StopPlay();
     // 歌单模式下一首/上一首（非歌单模式忽略）
     void Next();
@@ -67,6 +74,8 @@ private:
         kPlayRadio,
         kPlayWeather,
         kPlayStudyCard,
+        kPlayUrl,
+        kPlayContinuous,  // 连续播放模式：播完自动请求下一首
         kPause,
         kResume,
         kStop,
@@ -86,8 +95,8 @@ private:
     AudioCodec* codec_ = nullptr;
     std::function<void()> on_stopped_;
     volatile bool running_ = false;
-    volatile bool playing_ = false;
-    volatile bool paused_ = false;
+    std::atomic<bool> playing_ = false;
+    std::atomic<bool> paused_ = false;
     volatile bool stop_requested_ = false;
     // 歌单状态（仅播放任务访问）
     std::vector<std::string> playlist_;
@@ -97,6 +106,7 @@ private:
     volatile bool pending_prev_ = false;
     volatile bool single_play_requested_ = false;
     volatile bool pending_playlist_ = false;
+    volatile bool continuous_play_mode_ = false;  // 连续播放模式：播完自动请求下一首
     volatile bool wake_word_suspended_ = false;
 
     static void TaskEntry(void* arg);
@@ -109,6 +119,8 @@ private:
     void NotifyStopped();
     void ShowMessageOnScreen(const char* text);
     void PlayPlaylistInternal(std::vector<std::string> playlist);
+    void PlayContinuousInternal(const std::string& keyword);
+    std::string FetchNextSongFromServer();
     std::string DisplaySongName(const std::string& keyword);
     // 播放期间暂停/恢复唤醒词识别，避免本地音乐被 LLM/唤醒打断
     void SuspendWakeWordForPlayback();

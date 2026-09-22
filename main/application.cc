@@ -202,6 +202,9 @@ void Application::Run() {
         }
 
         if (bits & MAIN_EVENT_PLAYBACK_DRAINED) {
+            if (remote_tts_playback_pending_ && audio_service_.IsPlaybackIdle() && protocol_) {
+                CompleteRemoteTtsPlayback();
+            }
             // Deferred listening start (auto mode): the playback queue has
             // drained, so it is now safe to enable voice processing.
             if (pending_listening_start_ && GetDeviceState() == kDeviceStateListening &&
@@ -225,8 +228,8 @@ void Application::Run() {
 
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
-                // 学习卡片播放期间不上报任何音频，阻止残留/后续语音触发 LLM
-                if (study_card_playing_) {
+                // 学习卡片/音乐播放期间不上报任何音频，阻止残留/后续语音触发 LLM
+                if (study_card_playing_ || media_playing_) {
                     continue;
                 }
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
@@ -518,8 +521,12 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
-        // 学习卡片播放期间忽略服务器下发的音频，避免残留 LLM 回话播出来
-        if (GetDeviceState() == kDeviceStateSpeaking && !study_card_playing_) {
+        // Remote TTS interrupts local media; stale non-TTS audio remains suppressed.
+        if (GetDeviceState() == kDeviceStateSpeaking && !study_card_playing_ &&
+            (!media_playing_ || remote_tts_active_)) {
+            if (remote_tts_active_ && remote_tts_audio_packets_.fetch_add(1) == 0) {
+                ESP_LOGI(TAG, "Accepting remote TTS audio packets");
+            }
             audio_service_.PushPacketToDecodeQueue(std::move(packet));
         }
     });
@@ -537,6 +544,11 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            remote_tts_active_ = false;
+            if (media_paused_by_remote_tts_ && resume_media_after_remote_tts_) {
+                media_paused_by_remote_tts_ = false;
+                resume_media_after_remote_tts_();
+            }
             auto display = Board::GetInstance().GetDisplay();
             display->SetChatMessage("system", "");
             SetDeviceState(kDeviceStateIdle);
@@ -556,18 +568,28 @@ void Application::InitializeProtocol() {
                 return;
             }
             if (strcmp(state->valuestring, "start") == 0) {
+                remote_tts_active_ = true;
                 Schedule([this]() {
                     aborted_ = false;
+                    remote_tts_playback_pending_ = false;
+                    remote_tts_audio_packets_ = 0;
+                    if (!media_paused_by_remote_tts_ && pause_media_for_remote_tts_) {
+                        media_paused_by_remote_tts_ = pause_media_for_remote_tts_();
+                    }
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
                 Schedule([this]() {
+                    remote_tts_playback_pending_ = true;
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
                             SetDeviceState(kDeviceStateIdle);
                         } else {
                             SetDeviceState(kDeviceStateListening);
                         }
+                    }
+                    if (audio_service_.IsPlaybackIdle() && protocol_) {
+                        CompleteRemoteTtsPlayback();
                     }
                 });
             } else if (strcmp(state->valuestring, "sentence_start") == 0) {
@@ -657,6 +679,19 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->Start();
+}
+
+void Application::CompleteRemoteTtsPlayback() {
+    remote_tts_playback_pending_ = false;
+    remote_tts_active_ = false;
+    if (protocol_) {
+        protocol_->SendTtsPlaybackCompleted();
+    }
+    ESP_LOGI(TAG, "Remote TTS completed with %d audio packets", remote_tts_audio_packets_.load());
+    if (media_paused_by_remote_tts_ && resume_media_after_remote_tts_) {
+        media_paused_by_remote_tts_ = false;
+        resume_media_after_remote_tts_();
+    }
 }
 
 void Application::ShowActivationCode(const std::string& code, const std::string& message) {
