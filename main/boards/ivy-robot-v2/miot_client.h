@@ -9,7 +9,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include <vector>
+#include "music_player.h"
 
 class MusicPlayer;
 class WebSocket;
@@ -48,9 +48,12 @@ public:
     // 主动断开当前连接并重连（模拟自动下线），用于音乐播放结束后重置唤醒状态
     void RequestReconnect();
 
-    // 任一本地播放（音乐/电台/天气/学习卡片/课程连播）结束后调用（音乐播放器任务内）。
-    // 课程连播模式下会自动续播下一课；否则解除学习卡片静音并重连。
+    // Generic stop callback is retained; study continuation uses typed round events.
     void HandlePlaybackStopped();
+    void HandleStudyEvent(uint32_t generation, MusicPlayer::StudyEvent event);
+    cJSON* GetStudyPlaybackJson();
+    const std::string& GetStudyBootId() const { return boot_id_; }
+    void ResendStudyStatus();
 
 private:
     static constexpr const char* kServerUrl = "ws://192.168.199.162:8003/ws";
@@ -80,18 +83,45 @@ private:
     bool running_ = false;
     bool stop_requested_ = false;
     std::atomic<bool> reconnect_requested_{false};
+    std::mutex study_mutex_;
+    std::mutex study_asset_mutex_;
+    std::string boot_id_;
+    std::string playback_id_;
+    uint64_t study_request_id_ = 0;
+    uint64_t study_seq_ = 0;
+    std::string study_state_;
+    std::string study_error_code_;
+    std::string study_error_message_;
+    std::string study_snapshot_json_ = "null";
+    ivy::PlaybackGeneration study_audio_generation_;
+    struct StudyWork {
+        uint32_t generation;
+        std::string key;
+        std::string word;
+        bool course;
+        bool next;
+        int round;
+    };
+    QueueHandle_t study_work_queue_ = nullptr;
+    QueueHandle_t study_lrc_queue_ = nullptr;
+    // Firmware-lifetime workers, each with one pending request; replacement never spawns a task.
+    TaskHandle_t study_worker_ = nullptr;
+    TaskHandle_t study_lrc_worker_ = nullptr;
+    void DispatchStudyWork(const std::string& key, const std::string& word, bool next, int round);
+    static void StudyWorkerEntry(void* arg);
+    bool study_active_ = false;  // Lifecycle decisions are owned by the main task.
+    cJSON* StudyPlaybackJsonLocked();
+    void ReportStudyStatus(const char* state, const char* code = nullptr,
+                           const char* message = nullptr);
+    void FinishStudy(const char* state, const char* code = nullptr,
+                     const char* message = nullptr);
+    void InvalidateStudyAudio();
     // 课程连播状态：study_course 指令置位；每课播完自动续播下一课，播完全部或被打断时复位
     std::atomic<bool> course_mode_{false};
     std::atomic<bool> course_stopped_{false};
     std::string last_course_key_;
-    // 口型 GIF 后台任务代次：每次课程开始自增，异代下载结果丢弃
-    std::atomic<uint32_t> study_gif_generation_{0};
-    // 口型 GIF 是否已成功上屏：播放前同步等待保证 GIF 先于音频出现
-    std::atomic<bool> study_gif_shown_{false};
-    // 口型 GIF 三次尝试全部失败（音频不再等待，立即回退封面播放）
-    std::atomic<bool> study_gif_failed_{false};
     // FaceFonics 课程（kc-001~109）需音频播两遍：第1遍对口型 GIF，第2遍对卡通 GIF。
-    // 其余课程仅播一遍（现状）。在 MCP 线程/MusicPlayer 任务/主任务间共享，用原子保护。
+    // Round transitions are owned by the main task, not the generic stop callback.
     std::atomic<bool> study_facefonics_{false};
     std::atomic<int> study_pass_{0};  // 0=未开始 1=第1遍(口型) 2=第2遍(卡通)
     // 学习卡字幕：音频播放时按 LRC 时间轴逐行刷新屏幕底部字幕。
@@ -124,32 +154,23 @@ private:
     // 天气：拉取 /api/weather_now?city= 返回中文播报文本（失败返回空串），供屏幕显示
     std::string FetchWeatherText(const std::string& city);
     // 学习卡片图片：下载词卡 JPG 并上屏（预览图，5 秒自动隐藏）；失败返回 false
-    bool ShowStudyImage(const std::string& key);
-    bool ShowStudyJpeg(const std::string& url, const char* label);
+    bool ShowStudyImage(const std::string& key, uint32_t generation);
+    bool ShowStudyJpeg(const std::string& url, const char* label, uint32_t generation);
     // 口型/卡通动画 GIF：下载课程 GIF 整段循环播放；失败返回 false（回退封面）
     // url 为完整资源地址（口型或卡通）。
-    bool ShowStudyGif(const std::string& url);
+    bool ShowStudyGif(const std::string& url, uint32_t generation, int64_t deadline_ms);
     // 使用 BSD socket 直连服务器下载口型 GIF（http://host:port/path），
     // 避免 HttpClient 逐 1500B 分块解析对大文件的极慢吞吐。成功返回 true 并填充输出缓冲。
     bool DownloadStudyGifHttp(const std::string& host, int port, const std::string& path,
-                              std::vector<uint8_t>& out);
-    // 后台任务拉取并上屏 GIF（口型或卡通，避免阻塞 MCP 响应）；每次课程开始调用
-    void StartStudyGifAsync(const std::string& key, const std::string& url);
-    void StopStudyGif();
-    // 独立任务：等待 GIF 上屏后再播放课程音频，避免音频流抢占 WiFi
-    void StartStudyPlayAfterGif(const std::string& key, const std::string& word);
-    static void StudyPlayAfterGifTaskEntry(void* arg);
+                              std::vector<uint8_t>& out, uint32_t generation, int64_t deadline_ms);
     // 结束学习（单卡播完/课程播完/显式停止）后清理 GIF 预览，避免残留循环
     void ClearStudyPreview();
-    void RunStudyGif(const std::string& key, uint32_t generation, const std::string& url);
-    static void StudyGifTaskEntry(void* arg);
     // FaceFonics 课程（kc-001~109，有卡通 GIF 素材）返回 true；仅这类课程音频播两遍
     static bool IsFaceFonicsCourse(const std::string& key);
-    // 学习卡播放中进入第 2 遍（切换卡通 GIF 后重播音频）；在 MusicPlayer 任务内由
-    // HandlePlaybackStopped 调用，负责清掉第 1 遍口型 GIF 并换卡通 GIF + 重播。
+    // Start round two only from the generation-checked natural EOF event.
     void StartSecondStudyPass();
     // 音频开始播放时启动 LRC 字幕：后台任务拉取字幕并按时间轴刷新屏幕底部文本。
-    // 每遍音频（口型/卡通）播放前调用，timeout 限时于音频长度。
+    // Started on first PCM, independently for each round.
     void StartStudyLrc(const std::string& key);
     void StopStudyLrc();
     static void StudyLrcTaskEntry(void* arg);
@@ -157,14 +178,18 @@ private:
     // 解析一行 LRC "[mm:ss.cs] text"；返回秒级时间并输出文本；非时间行返回 -1
     static bool ParseLrcLine(const std::string& line, int& seconds, std::string& text);
     // 更新屏幕底部字幕（空串隐藏）；主任务安全的薄包装
-    void ShowStudySubtitle(const std::string& text);
-    // 课程连播：拉取 /api/study/course/next?after= 的下一课；成功返回 true 并输出 word/key
-    bool FetchNextCourse(const std::string& after, std::string& word, std::string& key);
+    void ShowStudySubtitle(const std::string& text, uint32_t generation = 0);
+    // Distinguish exhausted courses from HTTP/JSON failures.
+    enum class NextCourseResult { Next, Done, Failed };
+    NextCourseResult FetchNextCourse(const std::string& after, std::string& word, std::string& key,
+                                    uint32_t generation);
+    std::string FetchStudyBody(const std::string& url, uint32_t generation);
     // 随机学习卡片：GET /api/study/card -> {word,key}；成功返回 true
-    bool FetchStudyCard(std::string& word, std::string& key);
+    bool FetchStudyCard(std::string& word, std::string& key, uint32_t generation);
     // 课程起始卡：GET /api/study/course/find?text= -> {word,key}；成功返回 true
-    bool FetchStudyCourse(const std::string& text, std::string& word, std::string& key);
-    // 主任务内续播下一课（显示封面 -> 播放音频）；课程结束/失败时退出连播并复位
+    bool FetchStudyCourse(const std::string& text, std::string& word, std::string& key,
+                          uint32_t generation);
+    // Main-task dispatch only; lookup and assets are handled by the preparation worker.
     void ContinueCourse(const std::string& after);
     static std::string UrlEncode(const std::string& input);
 

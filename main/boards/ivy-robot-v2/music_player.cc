@@ -77,10 +77,12 @@ void MusicPlayer::PlayWeather(const std::string& city) {
     Enqueue(cmd);
 }
 
-void MusicPlayer::PlayStudyCard(const std::string& key) {
+bool MusicPlayer::PlayStudyCard(const std::string& key, uint32_t generation) {
     Command cmd{CommandType::kPlayStudyCard, {0}};
     strncpy(cmd.payload, key.c_str(), sizeof(cmd.payload) - 1);
-    Enqueue(cmd);
+    cmd.generation = generation;
+    cmd.owner = media_generation_.Advance();
+    return command_queue_ != nullptr && xQueueSend(command_queue_, &cmd, 0) == pdTRUE;
 }
 
 void MusicPlayer::PlayUrl(const std::string& url) {
@@ -141,6 +143,7 @@ void MusicPlayer::ResumeFromRemoteTts() {
 
 void MusicPlayer::StopPlay() {
     Command cmd{CommandType::kStop, {0}};
+    cmd.owner = media_generation_.Current();
     Enqueue(cmd);
 }
 
@@ -154,11 +157,20 @@ void MusicPlayer::Enqueue(const Command& cmd) {
     if (command_queue_ == nullptr) {
         return;
     }
+    Command queued = cmd;
+    if (IsPlayCommand(queued.type)) queued.owner = media_generation_.Advance();
     // 队列满时丢弃最旧的播放命令，确保新命令不被阻塞
-    if (xQueueSend(command_queue_, &cmd, 0) != pdTRUE) {
+    if (xQueueSend(command_queue_, &queued, 0) != pdTRUE) {
         Command dummy;
-        xQueueReceive(command_queue_, &dummy, 0);
-        xQueueSend(command_queue_, &cmd, 0);
+        if (xQueueReceive(command_queue_, &dummy, 0) == pdTRUE) {
+            if (dummy.type == CommandType::kPlayStudyCard && on_study_event_) {
+                on_study_event_(dummy.generation, StudyEvent::Failed);
+            }
+            if (dummy.type == CommandType::kPlaylist) {
+                delete static_cast<std::vector<std::string>*>(dummy.extra);
+            }
+        }
+        xQueueSend(command_queue_, &queued, 0);
     }
 }
 
@@ -173,6 +185,16 @@ void MusicPlayer::Run() {
         // 空闲时阻塞等待命令
         if (xQueueReceive(command_queue_, &cmd, pdMS_TO_TICKS(100)) != pdTRUE) {
             continue;
+        }
+        if (IsPlayCommand(cmd.type)) {
+            if (!IsCurrentOwner(cmd.owner) ||
+                (cmd.type == CommandType::kPlayStudyCard && study_generation_.load() != cmd.generation)) {
+                if (cmd.type == CommandType::kPlaylist) {
+                    delete static_cast<std::vector<std::string>*>(cmd.extra);
+                }
+                continue;
+            }
+            stop_notification_.Begin(cmd.owner);
         }
         switch (cmd.type) {
             case CommandType::kPlay:
@@ -201,7 +223,7 @@ void MusicPlayer::Run() {
                 single_play_requested_ = false;
                 pending_playlist_ = false;
                 playlist_mode_ = false;
-                PlayStream(cmd.payload, StreamMode::kStudy);
+                PlayStream(cmd.payload, StreamMode::kStudy, cmd.generation);
                 break;
             case CommandType::kPlayUrl:
                 // 直接播放 URL（跳过关键词解析）
@@ -238,6 +260,7 @@ void MusicPlayer::Run() {
                 paused_ = false;
                 break;
             case CommandType::kStop:
+                if (cmd.owner != stop_notification_.Owner()) break;
                 stop_requested_ = true;
                 playing_ = false;
                 paused_ = false;
@@ -430,60 +453,16 @@ std::string MusicPlayer::DisplaySongName(const std::string& keyword) {
     return base;
 }
 
-// ---------- MP3 帧头解析 ----------
-// 从 buf[start..] 中寻找合法 MPEG 帧头。找到时返回 true，并输出：
-//   frame_len 帧总长度（含帧头）；skip 从 start 到帧头的垃圾字节数（应丢弃）
-// 未找到（含数据不足）返回 false。仅支持 Layer1/2/3、MPEG1/2/2.5。
-static bool FindNextMp3Frame(const std::vector<uint8_t>& buf, size_t start, size_t& frame_len, size_t& skip) {
-    static const uint16_t kBitrateV1[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
-    static const uint16_t kBitrateV2[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
-    static const uint32_t kSampleRateV1[4] = {44100, 48000, 32000, 0};
-    static const uint32_t kSampleRateV2[4] = {22050, 24000, 16000, 0};
-    static const uint32_t kSampleRateV25[4] = {11025, 12000, 8000, 0};
-
-    for (size_t i = start; i + 4 <= buf.size(); i++) {
-        if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) {
-            continue;
-        }
-        int ver = (buf[i + 1] >> 3) & 0x3;    // 0=MPEG2.5 1=reserved 2=MPEG2 3=MPEG1
-        int layer = (buf[i + 1] >> 1) & 0x3;  // 1=Layer3 2=Layer2 3=Layer1
-        if (ver == 1 || layer == 0) {
-            continue;
-        }
-        int br_idx = (buf[i + 2] >> 4) & 0xF;
-        int sr_idx = (buf[i + 2] >> 2) & 0x3;
-        if (br_idx == 0 || br_idx == 15 || sr_idx == 3) {
-            continue;
-        }
-        uint16_t bitrate_kbps = (ver == 3) ? kBitrateV1[br_idx] : kBitrateV2[br_idx];
-        uint32_t sample_rate = (ver == 3) ? kSampleRateV1[sr_idx]
-                              : (ver == 2) ? kSampleRateV2[sr_idx]
-                                           : kSampleRateV25[sr_idx];
-        if (bitrate_kbps == 0 || sample_rate == 0) {
-            continue;
-        }
-        int padding = (buf[i + 2] >> 1) & 0x1;
-        uint32_t rate = bitrate_kbps * 1000u;
-        uint32_t bytes;
-        if (layer == 3) {  // Layer1
-            bytes = (12u * rate / sample_rate + padding) * 4u;
-        } else {           // Layer2/3
-            bytes = (ver == 3 ? 144u : 72u) * rate / sample_rate + padding;
-        }
-        if (bytes < 4u || bytes > 16384u) {
-            continue;
-        }
-        skip = i - start;
-        frame_len = bytes;
-        return true;
-    }
-    return false;
-}
-
-void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
+void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode, uint32_t generation) {
+    const bool study = mode == StreamMode::kStudy;
+    auto study_event = [this, study, generation](StudyEvent event) {
+        if (study && on_study_event_) on_study_event_(generation, event);
+    };
+    if (study && study_generation_.load() != generation) return;
     if (codec_ == nullptr) {
         ESP_LOGW(TAG, "No audio codec");
         NotifyStopped();
+        study_event(StudyEvent::Failed);
         return;
     }
 
@@ -491,6 +470,7 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
     if (network == nullptr) {
         ESP_LOGW(TAG, "No network interface");
         NotifyStopped();
+        study_event(StudyEvent::Failed);
         return;
     }
 
@@ -524,6 +504,9 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                                                 : kStreamUrlBase;
 
     bool is_direct_url = (keyword_to_play.find("://") != std::string::npos);
+    StudyEvent end_event = StudyEvent::Failed;
+    bool pcm_started = false;
+    bool reported_paused = false;
 
     while (restart && running_ && !stop_requested_) {
             restart = false;
@@ -597,14 +580,46 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
         char chunk[kReadChunk];
         int read_result;
         bool stream_ended = false;
+        bool decode_failed = false;
+        bool study_tail_pending = false;
+        size_t received_bytes = 0;
+        const size_t expected_bytes = http->GetBodyLength();
 
         while (!stop_requested_ && !stream_ended) {
+            if (study && study_generation_.load() != generation) {
+                stop_requested_ = true;
+                break;
+            }
             // 处理队列中的控制命令（不阻塞 HTTP 读取）
             Command cmd;
             while (xQueueReceive(command_queue_, &cmd, 0) == pdTRUE) {
+                // Keep study streams separate so each round has one immutable token.
+                bool replacement = IsPlayCommand(cmd.type);
+                if (replacement && !IsCurrentOwner(cmd.owner)) {
+                    if (cmd.type == CommandType::kPlaylist) {
+                        delete static_cast<std::vector<std::string>*>(cmd.extra);
+                    }
+                    continue;
+                }
+                if (replacement && (study || cmd.type == CommandType::kPlayStudyCard)) {
+                    if (xQueueSendToFront(command_queue_, &cmd, 0) != pdTRUE) {
+                        if (cmd.type == CommandType::kPlayStudyCard && on_study_event_) {
+                            on_study_event_(cmd.generation, StudyEvent::Failed);
+                        }
+                        if (cmd.type == CommandType::kPlaylist) {
+                            delete static_cast<std::vector<std::string>*>(cmd.extra);
+                        }
+                    }
+                    stop_requested_ = true;
+                    restart = false;
+                    break;
+                }
+                if (replacement && cmd.type != CommandType::kPlaylist) {
+                    stop_notification_.Begin(cmd.owner);
+                }
                 switch (cmd.type) {
                     case CommandType::kStop:
-                        stop_requested_ = true;
+                        if (cmd.owner == stop_notification_.Owner()) stop_requested_ = true;
                         break;
                     case CommandType::kPause:
                         paused_ = true;
@@ -682,6 +697,10 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
 
             // 暂停时丢弃数据但不关闭连接
             if (paused_) {
+                if (pcm_started && !reported_paused) {
+                    study_event(StudyEvent::Paused);
+                    reported_paused = true;
+                }
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
@@ -697,30 +716,53 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
 
             read_result = http->Read(chunk, sizeof(chunk));
             if (read_result > 0) {
-                encoded_buffer.insert(encoded_buffer.end(), chunk, chunk + read_result);
+                received_bytes += read_result;
+                if (study) {
+                    if (!ivy::AppendStudyBytes(encoded_buffer, reinterpret_cast<const uint8_t*>(chunk), read_result)) {
+                        ESP_LOGW(TAG, "Study buffer limit: received=%u buffered=%u incoming=%d pending=%d",
+                                 static_cast<unsigned>(received_bytes),
+                                 static_cast<unsigned>(encoded_buffer.size()), read_result, study_tail_pending);
+                        break;
+                    }
+                } else {
+                    encoded_buffer.insert(encoded_buffer.end(), chunk, chunk + read_result);
+                }
 
                 // 自行解析 MP3 帧头，仅在有完整帧时才喂给解码器；
                 // 这样不会把半个帧交给解码器（避免错误 12 风暴），
                 // 数据不足时保留在缓冲区等待更多数据。
                 size_t offset = 0;
                 while (offset < encoded_buffer.size()) {
+                    if (study && study_generation_.load() != generation) {
+                        stop_requested_ = true;
+                        break;
+                    }
                     size_t frame_len = 0, skip = 0;
-                    if (!FindNextMp3Frame(encoded_buffer, offset, frame_len, skip)) {
+                    bool was_tail_pending = study_tail_pending;
+                    bool candidate = study
+                        ? ivy::NextStudyMp3Frame(encoded_buffer, offset, pcm_started,
+                                                study_tail_pending, frame_len, skip)
+                        : ivy::FindNextMp3Frame(encoded_buffer, offset, frame_len, skip);
+                    if (!candidate) {
+                        if (study && !was_tail_pending && study_tail_pending) {
+                            ESP_LOGW(TAG, "Study tail candidate: offset=%u buffered=%u skip=%u frame=%u",
+                                     static_cast<unsigned>(received_bytes - encoded_buffer.size() + offset),
+                                     static_cast<unsigned>(encoded_buffer.size() - offset),
+                                     static_cast<unsigned>(skip), static_cast<unsigned>(frame_len));
+                        }
                         // 无合法帧头或数据不足：等待更多数据
                         break;
                     }
-                    if (skip > 0) {
-                        offset += skip;
-                    }
-                    if (offset + frame_len > encoded_buffer.size()) {
+                    if (frame_len > encoded_buffer.size() - offset - skip) {
                         // 帧数据不完整：等待更多数据
                         break;
                     }
+                    const size_t frame_offset = offset + skip;
 
                     esp_audio_dec_in_raw_t raw = {};
-                    raw.buffer = encoded_buffer.data() + offset;
+                    raw.buffer = encoded_buffer.data() + frame_offset;
                     // 喂入自帧头起的全部剩余数据：解码器消费首帧，帧后数据供位池使用
-                    raw.len = static_cast<uint32_t>(encoded_buffer.size() - offset);
+                    raw.len = static_cast<uint32_t>(encoded_buffer.size() - frame_offset);
                     raw.consumed = 0;
                     raw.frame_recover = ESP_AUDIO_DEC_RECOVERY_NONE;
 
@@ -733,7 +775,7 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                     esp_audio_dec_info_t dec_info = {};
                     esp_audio_err_t ret = esp_mp3_dec_decode(decoder, &raw, &frame, &dec_info);
                     if (ret == ESP_AUDIO_ERR_OK) {
-                        offset += (raw.consumed > 0) ? raw.consumed : frame_len;
+                        offset = frame_offset + ((raw.consumed > 0) ? raw.consumed : frame_len);
 
                         if (frame.decoded_size > 0) {
                             // 首次获取采样率时初始化重采样器
@@ -794,6 +836,11 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                                 codec_->EnableOutput(true);
                             }
                             codec_->OutputData(*out);
+                            if (!out->empty() && (!study || study_generation_.load() == generation)) {
+                                if (!pcm_started || reported_paused) study_event(StudyEvent::Playing);
+                                pcm_started = true;
+                                reported_paused = false;
+                            }
                         }
                     } else if (ret == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
                         // 输出缓冲区不足，扩容后重试
@@ -802,9 +849,19 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                         }
                         // 不推进 offset，重试同一帧
                     } else {
+                        if (study && pcm_started) {
+                            ESP_LOGW(TAG, "Study decode failure: code=%d offset=%u available=%u frame=%u consumed=%u",
+                                     ret, static_cast<unsigned>(received_bytes - encoded_buffer.size() + frame_offset),
+                                     static_cast<unsigned>(raw.len), static_cast<unsigned>(frame_len),
+                                     static_cast<unsigned>(raw.consumed));
+                            // Keep the raw candidate: a failed decode may have been binary APE data.
+                            study_tail_pending = true;
+                            break;
+                        }
                         // 完整帧仍解码失败：跳过该帧继续，避免死循环
+                        decode_failed = true;
                         ESP_LOGW(TAG, "mp3 frame decode error %d, skip frame at %u", ret, (unsigned)offset);
-                        offset += frame_len;
+                        offset = frame_offset + frame_len;
                     }
 
                     // 防止死循环：如果无法推进则退出内层循环
@@ -819,9 +876,23 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
                 }
             } else if (read_result == 0) {
                 stream_ended = true;
+                end_event = ivy::StudyAudioComplete(pcm_started, decode_failed, expected_bytes,
+                                                   received_bytes, encoded_buffer.data(), encoded_buffer.size())
+                    ? StudyEvent::Completed : StudyEvent::Failed;
+                if (study && end_event == StudyEvent::Failed) {
+                    ESP_LOGW(TAG, "Study EOF rejected: received=%u expected=%u tail=%u pending=%d pcm=%d decode_failed=%d",
+                             static_cast<unsigned>(received_bytes), static_cast<unsigned>(expected_bytes),
+                             static_cast<unsigned>(encoded_buffer.size()), study_tail_pending,
+                             pcm_started, decode_failed);
+                }
                 ESP_LOGI(TAG, "Stream ended");
             } else {
                 ESP_LOGW(TAG, "HTTP read error");
+                if (study) {
+                    ESP_LOGW(TAG, "Study HTTP failure: error=%d received=%u expected=%u buffered=%u",
+                             http->GetLastError(), static_cast<unsigned>(received_bytes),
+                             static_cast<unsigned>(expected_bytes), static_cast<unsigned>(encoded_buffer.size()));
+                }
                 break;
             }
         }
@@ -852,18 +923,21 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode) {
     ESP_LOGI(TAG, "Playback finished");
     // 歌单连播模式下（PlayPlaylistInternal 内部驱动逐首播放），单首结束不触发停止回调，
     // 由连播主循环统一决定继续下一首或整体停止后再回调，否则首曲播完就会断开 MIOT 导致连播中断。
-    if (!playlist_mode_) {
+    if (!playlist_mode_ && !continuous_play_mode_) {
         NotifyStopped();
     }
+    if (stop_requested_ || !running_) end_event = StudyEvent::Stopped;
+    study_event(end_event);
 }
 
 void MusicPlayer::NotifyStopped() {
+    if (!stop_notification_.Take()) return;
     // 播放彻底结束：恢复唤醒词检测，允许用户再次用语音唤醒交互
     ResumeWakeWordForPlayback();
     // 清除媒体播放标志，恢复 LLM 对话
     Application::GetInstance().SetMediaPlaying(false);
     if (on_stopped_ != nullptr) {
-        on_stopped_();
+        on_stopped_(stop_notification_.Owner());
     }
 }
 

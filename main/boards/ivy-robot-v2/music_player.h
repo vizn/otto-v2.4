@@ -11,6 +11,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "playback_logic.h"
 
 class AudioCodec;
 
@@ -37,7 +38,12 @@ public:
     // 天气播报：播放服务器 EdgeTTS 合成的天气音频
     void PlayWeather(const std::string& city);
     // 学习卡片：播放本地词库一张单词卡的音频（短音频，播完自然结束）
-    void PlayStudyCard(const std::string& key);
+    bool PlayStudyCard(const std::string& key, uint32_t generation);
+    enum class StudyEvent { Playing, Completed, Stopped, Failed, Paused };
+    void SetStudyGeneration(uint32_t generation) { study_generation_.store(generation); }
+    void SetOnStudyEvent(std::function<void(uint32_t, StudyEvent)> cb) {
+        on_study_event_ = std::move(cb);
+    }
     // 直接播放 URL：跳过关键词解析，直接播放指定的音频 URL
     void PlayUrl(const std::string& url);
     // 连续播放模式：播完自动从服务器获取下一首，直到手动停止
@@ -59,7 +65,8 @@ public:
     bool IsPlaying() const { return playing_; }
     bool IsPaused() const { return paused_; }
     // 播放结束（自然播完或被停止）时回调，用于结束跟随音乐的舞蹈等联动
-    void SetOnStoppedCallback(std::function<void()> cb) { on_stopped_ = std::move(cb); }
+    void SetOnStoppedCallback(std::function<void(uint32_t)> cb) { on_stopped_ = std::move(cb); }
+    bool IsCurrentOwner(uint32_t owner) const { return media_generation_.Matches(owner); }
 
 private:
     static constexpr const char* kStreamUrlBase = "http://192.168.199.162:8003/api/music/stream?song=";
@@ -88,12 +95,18 @@ private:
         CommandType type;
         char payload[128];
         void* extra = nullptr;  // kPlaylist: std::vector<std::string>*（所有权转移给播放任务）
+        uint32_t generation = 0;
+        uint32_t owner = 0;
     };
 
     TaskHandle_t task_handle_ = nullptr;
     QueueHandle_t command_queue_ = nullptr;
     AudioCodec* codec_ = nullptr;
-    std::function<void()> on_stopped_;
+    std::function<void(uint32_t)> on_stopped_;
+    ivy::PlaybackGeneration media_generation_;
+    ivy::StopNotification stop_notification_;
+    std::function<void(uint32_t, StudyEvent)> on_study_event_;
+    std::atomic<uint32_t> study_generation_{0};
     volatile bool running_ = false;
     std::atomic<bool> playing_ = false;
     std::atomic<bool> paused_ = false;
@@ -114,8 +127,14 @@ private:
     void ProcessCommand(const Command& cmd);
     // 播放类型，决定流 URL 前缀：music / radio / weather / study 词卡
     enum class StreamMode : uint8_t { kMusic, kRadio, kWeather, kStudy };
-    void PlayStream(const std::string& keyword, StreamMode mode);
+    void PlayStream(const std::string& keyword, StreamMode mode, uint32_t generation = 0);
     void Enqueue(const Command& cmd);
+    static bool IsPlayCommand(CommandType type) {
+        return type == CommandType::kPlay || type == CommandType::kPlaylist ||
+               type == CommandType::kPlayRadio || type == CommandType::kPlayWeather ||
+               type == CommandType::kPlayStudyCard || type == CommandType::kPlayUrl ||
+               type == CommandType::kPlayContinuous;
+    }
     void NotifyStopped();
     void ShowMessageOnScreen(const char* text);
     void PlayPlaylistInternal(std::vector<std::string> playlist);

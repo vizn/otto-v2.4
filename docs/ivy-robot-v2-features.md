@@ -85,6 +85,8 @@ bool IsAfeWakeWord() const override { return wake_detector_ == WakeDetector::kWa
 
 ### 5. 功夫英语学习卡片/课程：口型动画 GIF 同步播放
 
+Current lifecycle, MCP status contract, validation, and backup notes: [Study Playback Status](study-playback-status.md). The historical implementation notes below are retained for context.
+
 在 `main/boards/ivy-robot-v2/miot_client.cc` 实现学习卡片/课程连播链路，口型动画以 GIF 形式与音频同步上屏。
 
 **端点常量**（`miot_client.h`）：

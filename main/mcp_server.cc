@@ -363,6 +363,12 @@ void McpServer::ParseMessage(const cJSON* json) {
     }
     
     auto method_str = std::string(method->valuestring);
+    if (method_str == "notifications/initialized") {
+        Application::GetInstance().Schedule([this]() {
+            if (on_initialized_) on_initialized_();
+        });
+        return;
+    }
     if (method_str.find("notifications") == 0) {
         return;
     }

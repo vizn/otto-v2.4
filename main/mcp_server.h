@@ -325,6 +325,7 @@ public:
     void AddUserOnlyTool(const std::string& name, const std::string& description, const PropertyList& properties, std::function<ReturnValue(const PropertyList&)> callback);
     void ParseMessage(const cJSON* json);
     void ParseMessage(const std::string& message);
+    void SetOnInitialized(std::function<void()> callback) { on_initialized_ = std::move(callback); }
 
 private:
     McpServer();
@@ -339,6 +340,7 @@ private:
     void DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments);
 
     std::vector<McpTool*> tools_;
+    std::function<void()> on_initialized_;
 };
 
 #endif // MCP_SERVER_H

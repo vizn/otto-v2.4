@@ -124,7 +124,7 @@ private:
     void SetNetworkEventCallback(NetworkEventCallback callback) override {
         WifiBoard::SetNetworkEventCallback([this, callback](NetworkEvent event, const std::string& data) {
             callback(event, data);
-            if (event == NetworkEvent::Connected && miot_client_ == nullptr) {
+            if (event == NetworkEvent::Connected && music_player_ == nullptr) {
                 StartMiotClient();
             }
         });
@@ -138,16 +138,19 @@ private:
             [this]() { return music_player_ != nullptr && music_player_->PauseForRemoteTts(); },
             [this]() { if (music_player_ != nullptr) music_player_->ResumeFromRemoteTts(); });
 
-        miot_client_ = new MiotClient();
         miot_client_->SetMusicPlayer(music_player_);
+        music_player_->SetOnStudyEvent([this](uint32_t generation, MusicPlayer::StudyEvent event) {
+            miot_client_->HandleStudyEvent(generation, event);
+        });
         // 音乐播放结束（自然播完/被停止）：结束跟随音乐的连续舞蹈；
         // 若处于课程连播则自动续播下一课，否则解除学习卡片静音并重连恢复唤醒
-        music_player_->SetOnStoppedCallback([this]() {
-            ESP_LOGI(TAG, "Music stopped, stopping continuous dance");
-            OttoControllerStopAll();
-            if (miot_client_ != nullptr) {
+        music_player_->SetOnStoppedCallback([this](uint32_t owner) {
+            Application::GetInstance().Schedule([this, owner]() {
+                if (!music_player_->IsCurrentOwner(owner)) return;
+                ESP_LOGI(TAG, "Music stopped, stopping continuous dance");
+                OttoControllerStopAll();
                 miot_client_->HandlePlaybackStopped();
-            }
+            });
         });
         miot_client_->Start();
         ESP_LOGI(TAG, "MIOT client started");
@@ -155,6 +158,7 @@ private:
 
     void RegisterIvyMediaTools() {
         auto& mcp_server = McpServer::GetInstance();
+        mcp_server.SetOnInitialized([this]() { miot_client_->ResendStudyStatus(); });
 
         mcp_server.AddTool("self.ivy.play_music",
             "播放音乐。keyword: 歌曲/歌手/歌词片段关键词；dance=true 时同步触发连续舞蹈。",
@@ -221,7 +225,7 @@ private:
                 std::string key = properties["key"].value<std::string>();
                 std::string word = properties["word"].value<std::string>();
                 bool course = properties["course"].value<bool>();
-                if (miot_client_ != nullptr) miot_client_->McpPlayStudy(key, word, course);
+                miot_client_->McpPlayStudy(key, word, course);
                 return true;
             });
 
@@ -266,6 +270,8 @@ private:
                     cJSON_AddBoolToObject(status, "playing", music_player_->IsPlaying());
                     cJSON_AddBoolToObject(status, "paused", music_player_->IsPaused());
                 }
+                cJSON_AddItemToObject(status, "study_playback", miot_client_->GetStudyPlaybackJson());
+                cJSON_AddStringToObject(status, "study_boot_id", miot_client_->GetStudyBootId().c_str());
                 char* s = cJSON_PrintUnformatted(status);
                 std::string result(s);
                 free(s);
@@ -293,7 +299,7 @@ private:
 
 public:
     OttoRobot()
-        : boot_button_(BOOT_BUTTON_GPIO), audio_codec_(nullptr), miot_client_(nullptr), music_player_(nullptr) {
+        : boot_button_(BOOT_BUTTON_GPIO), audio_codec_(nullptr), miot_client_(new MiotClient()), music_player_(nullptr) {
         // 沿用上游 otto-robot (v2.4.2) 的硬件版本选择结构，但本板固定为无摄像头硬件
         // （24pin ST7789 + INMP441 + MAX98357），仅支持 OTTO_VERSION_NO_CAMERA。
         // 按 OTTO_HARDWARE_VERSION 选择 hw_config，便于后续直接 git merge 吸收上游板级改进。
@@ -325,6 +331,18 @@ public:
 
     virtual AudioCodec* GetAudioCodec() override { return audio_codec_; }
 
+    std::string GetDeviceStatusJson() override {
+        auto* root = cJSON_Parse(WifiBoard::GetDeviceStatusJson().c_str());
+        if (!root) return "{}";
+        cJSON_AddItemToObject(root, "study_playback", miot_client_->GetStudyPlaybackJson());
+        cJSON_AddStringToObject(root, "study_boot_id", miot_client_->GetStudyBootId().c_str());
+        char* json = cJSON_PrintUnformatted(root);
+        std::string result = json ? json : "{}";
+        cJSON_free(json);
+        cJSON_Delete(root);
+        return result;
+    }
+
     virtual Display* GetDisplay() override { return display_; }
 
     virtual Backlight* GetBacklight() override {
@@ -345,9 +363,11 @@ public:
 
     void OnUserInteract() override {
         // 用户唤醒（按键切换对话/唤醒词）：停止本地 MIOT 音乐播放，避免与对话音频冲突
-        if (music_player_ != nullptr && music_player_->IsPlaying()) {
+        if (music_player_ != nullptr &&
+            (music_player_->IsPlaying() || Application::GetInstance().IsStudyCardPlaying())) {
             ESP_LOGI(TAG, "User interaction, stopping MIOT music playback");
-            music_player_->StopPlay();
+            // Application invokes this hook from its main task, including during GIF loading.
+            miot_client_->McpControlPlayback("stop");
         }
         // 用户打断：停止当前舞蹈/动作并归位
         OttoControllerStopAll();
