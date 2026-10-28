@@ -1,7 +1,8 @@
 #include "ota.h"
-#include "system_info.h"
-#include "settings.h"
 #include "assets/lang_config.h"
+#include "resource_url.h"
+#include "settings.h"
+#include "system_info.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -291,6 +292,16 @@ esp_err_t Ota::DoCheckVersion(const std::string& url, bool short_timeout) {
         has_websocket_config_ = true;
     } else {
         ESP_LOGI(TAG, "No websocket section found!");
+    }
+
+    // Commit a resource origin only with a valid transport configuration.
+    auto resource_origin = ivy::ResourceOrigin(url);
+    if ((has_mqtt_config_ || has_websocket_config_) && !resource_origin.empty()) {
+        Settings resources("resources", true);
+        if (resources.GetString("base_url") != resource_origin) {
+            resources.SetString("base_url", resource_origin);
+        }
+        ESP_LOGI(TAG, "Resource origin: %s", resource_origin.c_str());
     }
 
     has_server_time_ = false;

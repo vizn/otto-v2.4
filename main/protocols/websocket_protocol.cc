@@ -14,14 +14,49 @@
 
 WebsocketProtocol::WebsocketProtocol() { event_group_handle_ = xEventGroupCreate(); }
 
-WebsocketProtocol::~WebsocketProtocol() { vEventGroupDelete(event_group_handle_); }
+WebsocketProtocol::~WebsocketProtocol() {
+    stopping_ = true;
+    if (control_task_) {
+        xTaskNotifyGive(control_task_);
+        // Join the bounded network operation before destroying callback state.
+        xEventGroupWaitBits(event_group_handle_, WEBSOCKET_CONTROL_STOPPED_EVENT, pdFALSE, pdTRUE,
+                            portMAX_DELAY);
+    }
+    connection_generation_.fetch_add(1);
+    websocket_.reset();
+    vEventGroupDelete(event_group_handle_);
+}
 
 bool WebsocketProtocol::Start() {
-    // Only connect to server when audio channel is needed
-    return true;
+    if (control_task_)
+        return true;
+    return xTaskCreate(ControlTask, "ws_control", 12288, this, 5, &control_task_) == pdPASS;
+}
+
+void WebsocketProtocol::ControlTask(void* arg) {
+    auto* self = static_cast<WebsocketProtocol*>(arg);
+    int64_t retry_at = 0;
+    int64_t ping_at = 0;
+    while (!self->stopping_) {
+        const int64_t now = esp_timer_get_time() / 1000;
+        auto state = Application::GetInstance().GetDeviceState();
+        if (!self->IsControlChannelOpened() && now >= retry_at &&
+            (state == kDeviceStateIdle || state == kDeviceStateActivating)) {
+            self->EnsureConnection();
+            retry_at = esp_timer_get_time() / 1000 + 5000;
+            ping_at = esp_timer_get_time() / 1000 + 30000;
+        } else if (self->IsControlChannelOpened() && now >= ping_at) {
+            self->SendText("{\"type\":\"ping\",\"scope\":\"control\"}");
+            ping_at = now + 30000;
+        }
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+    }
+    xEventGroupSetBits(self->event_group_handle_, WEBSOCKET_CONTROL_STOPPED_EVENT);
+    vTaskDelete(nullptr);
 }
 
 bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
+    std::lock_guard<std::recursive_mutex> lock(connection_mutex_);
     if (websocket_ == nullptr || !websocket_->IsConnected()) {
         return false;
     }
@@ -54,6 +89,7 @@ bool WebsocketProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
 }
 
 bool WebsocketProtocol::SendText(const std::string& text) {
+    std::lock_guard<std::recursive_mutex> lock(connection_mutex_);
     if (websocket_ == nullptr || !websocket_->IsConnected()) {
         return false;
     }
@@ -68,15 +104,44 @@ bool WebsocketProtocol::SendText(const std::string& text) {
 }
 
 bool WebsocketProtocol::IsAudioChannelOpened() const {
-    return websocket_ != nullptr && websocket_->IsConnected() && !error_occurred_ && !IsTimeout();
+    return audio_channel_active_ && IsControlChannelOpened() && !IsTimeout();
+}
+
+bool WebsocketProtocol::IsControlChannelOpened() const {
+    return control_ready_ && !stopping_ && !error_occurred_;
 }
 
 void WebsocketProtocol::CloseAudioChannel(bool send_goodbye) {
+    std::lock_guard<std::recursive_mutex> lock(connection_mutex_);
     (void)send_goodbye;  // Websocket doesn't need to send goodbye message
+    connection_generation_.fetch_add(1);
+    control_ready_ = false;
+    audio_channel_active_ = false;
     websocket_.reset();
+    if (on_audio_channel_closed_)
+        on_audio_channel_closed_();
 }
 
 bool WebsocketProtocol::OpenAudioChannel() {
+    if (!EnsureConnection())
+        return false;
+    audio_channel_active_ = true;
+    if (on_audio_channel_opened_)
+        on_audio_channel_opened_();
+    return true;
+}
+
+bool WebsocketProtocol::EnsureConnection() {
+    std::lock_guard<std::recursive_mutex> lock(connection_mutex_);
+    if (stopping_)
+        return false;
+    if (IsControlChannelOpened() && websocket_ && websocket_->IsConnected())
+        return true;
+    control_ready_ = false;
+    audio_channel_active_ = false;
+    const auto generation = connection_generation_.fetch_add(1) + 1;
+    websocket_.reset();
+    xEventGroupClearBits(event_group_handle_, WEBSOCKET_PROTOCOL_SERVER_HELLO_EVENT);
     Settings settings("websocket", false);
     std::string url = settings.GetString("url");
     std::string token = settings.GetString("token");
@@ -105,7 +170,9 @@ bool WebsocketProtocol::OpenAudioChannel() {
     websocket_->SetHeader("Device-Id", SystemInfo::GetMacAddress().c_str());
     websocket_->SetHeader("Client-Id", Board::GetInstance().GetUuid().c_str());
 
-    websocket_->OnData([this](const char* data, size_t len, bool binary) {
+    websocket_->OnData([this, generation](const char* data, size_t len, bool binary) {
+        if (stopping_ || generation != connection_generation_.load())
+            return;
         if (binary) {
             if (on_incoming_audio_ != nullptr) {
                 if (version_ == 2) {
@@ -145,7 +212,16 @@ bool WebsocketProtocol::OpenAudioChannel() {
             if (cJSON_IsString(type)) {
                 if (strcmp(type->valuestring, "hello") == 0) {
                     ParseServerHello(root);
+                } else if (strcmp(type->valuestring, "pong") == 0) {
+                    // Control heartbeat does not start or extend a voice interaction.
                 } else {
+                    if (strcmp(type->valuestring, "tts") == 0) {
+                        auto state = cJSON_GetObjectItem(root, "state");
+                        if (cJSON_IsString(state) && strcmp(state->valuestring, "start") == 0 &&
+                            !audio_channel_active_.exchange(true) && on_audio_channel_opened_) {
+                            on_audio_channel_opened_();
+                        }
+                    }
                     if (on_incoming_json_ != nullptr) {
                         on_incoming_json_(root);
                     }
@@ -158,7 +234,11 @@ bool WebsocketProtocol::OpenAudioChannel() {
         last_incoming_time_ = std::chrono::steady_clock::now();
     });
 
-    websocket_->OnDisconnected([this]() {
+    websocket_->OnDisconnected([this, generation]() {
+        if (stopping_ || generation != connection_generation_.load())
+            return;
+        control_ready_ = false;
+        audio_channel_active_ = false;
         ESP_LOGI(TAG, "Websocket disconnected");
         if (on_audio_channel_closed_ != nullptr) {
             on_audio_channel_closed_();
@@ -188,10 +268,10 @@ bool WebsocketProtocol::OpenAudioChannel() {
         return false;
     }
 
-    if (on_audio_channel_opened_ != nullptr) {
-        on_audio_channel_opened_();
-    }
-
+    control_ready_ = true;
+    if (on_connected_)
+        on_connected_();
+    ESP_LOGI(TAG, "Control channel ready (voice remains idle)");
     return true;
 }
 
@@ -205,6 +285,7 @@ std::string WebsocketProtocol::GetHelloMessage() {
     cJSON_AddBoolToObject(features, "aec", true);
 #endif
     cJSON_AddBoolToObject(features, "mcp", true);
+    cJSON_AddBoolToObject(features, "control_channel", true);
     cJSON_AddItemToObject(root, "features", features);
     AddTextFontCapabilities(root);
     cJSON_AddStringToObject(root, "transport", "websocket");

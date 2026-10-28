@@ -69,10 +69,10 @@ public:
     bool IsCurrentOwner(uint32_t owner) const { return media_generation_.Matches(owner); }
 
 private:
-    static constexpr const char* kStreamUrlBase = "http://192.168.199.162:8003/api/music/stream?song=";
-    static constexpr const char* kRadioStreamUrlBase = "http://192.168.199.162:8003/api/radio/stream?station=";
-    static constexpr const char* kWeatherTtsUrlBase = "http://192.168.199.162:8003/api/weather_tts?city=";
-    static constexpr const char* kStudyStreamUrlBase = "http://192.168.199.162:8003/api/study/stream?key=";
+    static constexpr const char* kStreamUrlBase = "/api/music/stream?song=";
+    static constexpr const char* kRadioStreamUrlBase = "/api/radio/stream?station=";
+    static constexpr const char* kWeatherTtsUrlBase = "/api/weather_tts?city=";
+    static constexpr const char* kStudyStreamUrlBase = "/api/study/stream?key=";
     static constexpr int kCommandQueueDepth = 8;
 
     enum class CommandType : uint8_t {

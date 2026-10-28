@@ -61,17 +61,17 @@ private:
     // 状态一律经 MCP 工具（self.reboot / self.upgrade_firmware / set_volume / set_brightness /
     // get_device_status）走服务器->设备链路，不依赖本长连接。以下代码保留作回退。
     static constexpr bool kEnableMiotWs = false;
-    static constexpr const char* kPlaylistApiBase = "http://192.168.199.162:8003/api/music/playlist?album=";
-    static constexpr const char* kWeatherApiBase = "http://192.168.199.162:8003/api/weather_now?city=";
-    static constexpr const char* kStudyImageUrlBase = "http://192.168.199.162:8003/api/study/image?key=";
-    static constexpr const char* kStudyCourseNextApiBase = "http://192.168.199.162:8003/api/study/course/next?after=";
+    static constexpr const char* kPlaylistApiBase = "/api/music/playlist?album=";
+    static constexpr const char* kWeatherApiBase = "/api/weather_now?city=";
+    static constexpr const char* kStudyImageUrlBase = "/api/study/image?key=";
+    static constexpr const char* kStudyCourseNextApiBase = "/api/study/course/next?after=";
     // 学习卡片/课程起始卡：从 8001 词库服务自取 {word,key}（MCP 路径下 key 为空时自动获取，去除对 /ws 的依赖）
-    static constexpr const char* kStudyCardApiBase = "http://192.168.199.162:8001/api/study/card";
-    static constexpr const char* kStudyCourseFindApiBase = "http://192.168.199.162:8001/api/study/course/find";
-    static constexpr const char* kStudyGifUrlBase = "http://192.168.199.162:8003/api/study/gif?key=";
-    static constexpr const char* kStudyCartoonGifUrlBase = "http://192.168.199.162:8003/api/study/cartoon_gif?key=";
+    static constexpr const char* kStudyCardApiBase = "/api/study/card";
+    static constexpr const char* kStudyCourseFindApiBase = "/api/study/course/find";
+    static constexpr const char* kStudyGifUrlBase = "/api/study/gif?key=";
+    static constexpr const char* kStudyCartoonGifUrlBase = "/api/study/cartoon_gif?key=";
     // 学习卡同步字幕：LRC（时间轴文本），播放时逐行更新屏幕底部字幕
-    static constexpr const char* kStudyLrcUrlBase = "http://192.168.199.162:8003/api/study/lrc?key=";
+    static constexpr const char* kStudyLrcUrlBase = "/api/study/lrc?key=";
     static constexpr int kConnectId = 2;
     static constexpr int kHeartbeatIntervalMs = 30000;
     static constexpr int kStatusReportIntervalMs = 60000;
@@ -163,6 +163,8 @@ private:
     // 避免 HttpClient 逐 1500B 分块解析对大文件的极慢吞吐。成功返回 true 并填充输出缓冲。
     bool DownloadStudyGifHttp(const std::string& host, int port, const std::string& path,
                               std::vector<uint8_t>& out, uint32_t generation, int64_t deadline_ms);
+    bool DownloadStudyGifTls(const std::string& url, std::vector<uint8_t>& out, uint32_t generation,
+                             int64_t deadline_ms);
     // 结束学习（单卡播完/课程播完/显式停止）后清理 GIF 预览，避免残留循环
     void ClearStudyPreview();
     // FaceFonics 课程（kc-001~109，有卡通 GIF 素材）返回 true；仅这类课程音频播两遍

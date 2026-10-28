@@ -1,4 +1,5 @@
 #include "music_player.h"
+#include "resource_url.h"
 
 #include <stdint.h>
 #include <esp_ae_rate_cvt.h>
@@ -365,46 +366,33 @@ void MusicPlayer::PlayContinuousInternal(const std::string& keyword) {
 
 // 从服务器获取下一首随机歌曲
 std::string MusicPlayer::FetchNextSongFromServer() {
-    const char* server_url = "http://192.168.199.162:8003/api/music/next?count=1";
-    
-    esp_http_client_config_t config = {};
-    config.url = server_url;
-    config.timeout_ms = 5000;
-    
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) {
-        ESP_LOGE(TAG, "连续播放: HTTP 客户端初始化失败");
+    auto* network = Board::GetInstance().GetNetwork();
+    if (!network)
+        return "";
+    auto client = network->CreateHttp(3);
+    if (!client)
+        return "";
+    client->SetTimeout(15000);
+    client->SetHeader("Accept-Encoding", "identity");
+    if (!client->Open("GET", ivy::ResourceUrl("/api/music/next?count=1")) ||
+        client->GetStatusCode() != 200) {
+        client->Close();
         return "";
     }
-    
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "连续播放: HTTP 连接失败: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        return "";
-    }
-    
-    esp_http_client_fetch_headers(client);
-    int status = esp_http_client_get_status_code(client);
-    
-    if (status != 200) {
-        ESP_LOGE(TAG, "连续播放: HTTP 状态码: %d", status);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        return "";
-    }
-    
     std::string response;
     char buffer[512];
     int read_len;
-    while ((read_len = esp_http_client_read(client, buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[read_len] = '\0';
-        response += buffer;
+    while ((read_len = client->Read(buffer, sizeof(buffer))) > 0) {
+        if (response.size() + read_len > 65536) {
+            client->Close();
+            return "";
+        }
+        response.append(buffer, read_len);
     }
-    
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-    
+    client->Close();
+    if (read_len < 0)
+        return "";
+
     // 解析 JSON 响应：{"songs": ["keyword1", "keyword2", ...]}
     cJSON* json = cJSON_Parse(response.c_str());
     if (!json) {
@@ -420,7 +408,8 @@ std::string MusicPlayer::FetchNextSongFromServer() {
     }
     
     cJSON* first_song = cJSON_GetArrayItem(songs, 0);
-    std::string result = cJSON_GetStringValue(first_song);
+    const char* value = cJSON_GetStringValue(first_song);
+    std::string result = value ? value : "";
     cJSON_Delete(json);
     
     ESP_LOGI(TAG, "连续播放: 获取下一首: %s", result.c_str());
@@ -514,7 +503,7 @@ void MusicPlayer::PlayStream(const std::string& keyword, StreamMode mode, uint32
             if (is_direct_url) {
                 url = keyword_to_play;
             } else {
-                url = url_base + UrlEncode(keyword_to_play);
+                url = ivy::ResourceUrl(url_base) + UrlEncode(keyword_to_play);
                 // 携带设备 MAC，便于服务端回传真实歌名（修正 random/模糊匹配导致的屏显不一致）
                 url += "&mac=" + UrlEncode(SystemInfo::GetMacAddress());
             }

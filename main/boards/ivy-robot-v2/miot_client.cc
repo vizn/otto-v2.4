@@ -1,4 +1,5 @@
 #include "miot_client.h"
+#include "resource_url.h"
 
 #include <esp_log.h>
 #include <esp_random.h>
@@ -658,7 +659,8 @@ void MiotClient::StudyWorkerEntry(void* arg) {
         if (round == 1) client->ShowStudyImage(key, generation);
         if (!current()) continue;
         const char* base = round == 2 ? kStudyCartoonGifUrlBase : kStudyGifUrlBase;
-        int64_t deadline_ms = esp_timer_get_time() / 1000 + 15000;
+        const bool public_resources = ivy::ResourceUrl(base).rfind("https://", 0) == 0;
+        int64_t deadline_ms = esp_timer_get_time() / 1000 + (public_resources ? 45000 : 15000);
         for (int attempt = 0; attempt < 3 && current() && esp_timer_get_time() / 1000 < deadline_ms; ++attempt) {
             if (client->ShowStudyGif(std::string(base) + UrlEncode(key), generation, deadline_ms)) break;
             for (int delay = 0; attempt < 2 && delay < 2000 && current() &&
@@ -821,7 +823,7 @@ std::vector<std::string> MiotClient::FetchAlbumPlaylist(const std::string& album
         return songs;
     }
 
-    std::string url = kPlaylistApiBase + UrlEncode(album_name);
+    std::string url = ivy::ResourceUrl(kPlaylistApiBase) + UrlEncode(album_name);
     auto http = network->CreateHttp(3);
     if (http == nullptr) {
         ESP_LOGE(TAG, "Failed to create http client for album fetch");
@@ -878,7 +880,7 @@ std::string MiotClient::FetchWeatherText(const std::string& city) {
         ESP_LOGW(TAG, "No network interface for weather fetch");
         return text;
     }
-    std::string url = kWeatherApiBase + UrlEncode(city);
+    std::string url = ivy::ResourceUrl(kWeatherApiBase) + UrlEncode(city);
     auto http = network->CreateHttp(3);
     if (http == nullptr) {
         ESP_LOGE(TAG, "Failed to create http client for weather fetch");
@@ -925,7 +927,7 @@ std::string MiotClient::FetchStudyBody(const std::string& url, uint32_t generati
     http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
     http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
     http->SetHeader("Accept-Encoding", "identity");
-    if (!http->Open("GET", url) || http->GetStatusCode() != 200) {
+    if (!http->Open("GET", ivy::ResourceUrl(url)) || http->GetStatusCode() != 200) {
         http->Close();
         return "";
     }
@@ -1026,7 +1028,7 @@ bool MiotClient::ShowStudyJpeg(const std::string& url, const char* label, uint32
     http->SetHeader("User-Agent", "ESP32-MIOT/1.0");
     http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
     http->SetHeader("Accept-Encoding", "identity");
-    if (!http->Open("GET", url)) {
+    if (!http->Open("GET", ivy::ResourceUrl(url))) {
         ESP_LOGE(TAG, "Study image HTTP open failed: %s", url.c_str());
         http->Close();
         return false;
@@ -1261,38 +1263,97 @@ bool MiotClient::DownloadStudyGifHttp(const std::string& host, int port, const s
     return true;
 }
 
-bool MiotClient::ShowStudyGif(const std::string& url, uint32_t generation, int64_t deadline_ms) {
+bool MiotClient::DownloadStudyGifTls(const std::string& url, std::vector<uint8_t>& out,
+                                     uint32_t generation, int64_t deadline_ms) {
+    auto* network = Board::GetInstance().GetNetwork();
+    if (!network || !study_audio_generation_.Matches(generation))
+        return false;
+    auto http = network->CreateHttp(3);
+    if (!http)
+        return false;
+    int remaining = ivy::RemainingReadBudgetMs(deadline_ms, esp_timer_get_time() / 1000);
+    if (!remaining)
+        return false;
+    http->SetTimeout(remaining);
+    http->SetHeader("Accept-Encoding", "identity");
+    http->SetHeader("X-Device-Mac", SystemInfo::GetMacAddress().c_str());
+    if (!http->Open("GET", url) || http->GetStatusCode() != 200) {
+        http->Close();
+        return false;
+    }
+    constexpr size_t limit = 4 * 1024 * 1024;
+    const size_t expected = http->GetBodyLength();
+    if (expected > limit) {
+        http->Close();
+        return false;
+    }
+    out.clear();
+    out.reserve(expected ? expected : 512 * 1024);
+    std::vector<uint8_t> buffer(4096);
+    bool complete = false;
+    while (study_audio_generation_.Matches(generation)) {
+        remaining = ivy::RemainingReadBudgetMs(deadline_ms, esp_timer_get_time() / 1000);
+        if (!remaining)
+            break;
+        http->SetTimeout(remaining);
+        int count = http->Read(reinterpret_cast<char*>(buffer.data()), buffer.size());
+        if (count == 0) {
+            complete = !expected || expected == out.size();
+            break;
+        }
+        if (count < 0 || out.size() + count > limit)
+            break;
+        out.insert(out.end(), buffer.begin(), buffer.begin() + count);
+        if (expected && out.size() == expected) {
+            complete = true;
+            break;
+        }
+    }
+    http->Close();
+    return complete && study_audio_generation_.Matches(generation);
+}
+
+bool MiotClient::ShowStudyGif(const std::string& resource, uint32_t generation,
+                              int64_t deadline_ms) {
+    const std::string url = ivy::ResourceUrl(resource);
     if (url.empty()) {
         return false;
     }
     auto& board = Board::GetInstance();
-    // 拆分 http://host:port/path -> host/port/path
-    const char* base = "http://";
-    size_t host_start = strlen(base);
-    std::string rest = url.substr(host_start);
-    size_t port_end = rest.find('/');
-    if (port_end == std::string::npos) {
-        ESP_LOGW(TAG, "Study gif invalid url: %s", url.c_str());
-        return false;
-    }
-    std::string hostport = rest.substr(0, port_end);
-    std::string http_path = rest.substr(port_end);
-    size_t colon = hostport.find(':');
-    std::string host = hostport;
-    int port = 80;
-    if (colon != std::string::npos) {
-        host = hostport.substr(0, colon);
-        std::string port_str = hostport.substr(colon + 1);
-        port = std::atoi(port_str.c_str());
-        if (port <= 0 || port > 65535) {
-            ESP_LOGW(TAG, "Study gif invalid port: %s", port_str.c_str());
+    std::vector<uint8_t> data;
+    if (url.rfind("https://", 0) == 0) {
+        if (!DownloadStudyGifTls(url, data, generation, deadline_ms))
+            return false;
+    } else {
+        if (url.rfind("http://", 0) != 0)
+            return false;
+        // 拆分 http://host:port/path -> host/port/path
+        const char* base = "http://";
+        size_t host_start = strlen(base);
+        std::string rest = url.substr(host_start);
+        size_t port_end = rest.find('/');
+        if (port_end == std::string::npos) {
+            ESP_LOGW(TAG, "Study gif invalid url: %s", url.c_str());
             return false;
         }
-    }
-    std::vector<uint8_t> data;
-    if (!DownloadStudyGifHttp(host, port, http_path, data, generation, deadline_ms)) {
-        ESP_LOGW(TAG, "Study gif download failed: %s", url.c_str());
-        return false;
+        std::string hostport = rest.substr(0, port_end);
+        std::string http_path = rest.substr(port_end);
+        size_t colon = hostport.find(':');
+        std::string host = hostport;
+        int port = 80;
+        if (colon != std::string::npos) {
+            host = hostport.substr(0, colon);
+            std::string port_str = hostport.substr(colon + 1);
+            port = std::atoi(port_str.c_str());
+            if (port <= 0 || port > 65535) {
+                ESP_LOGW(TAG, "Study gif invalid port: %s", port_str.c_str());
+                return false;
+            }
+        }
+        if (!DownloadStudyGifHttp(host, port, http_path, data, generation, deadline_ms)) {
+            ESP_LOGW(TAG, "Study gif download failed: %s", url.c_str());
+            return false;
+        }
     }
     size_t content_length = data.size();
     // 口型/卡通 GIF 可能超过默认预览图上限：放宽到 4MB，且要求至少 512KB 以避开噪声小图。
