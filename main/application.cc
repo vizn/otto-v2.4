@@ -13,14 +13,20 @@
 
 #include <driver/gpio.h>
 #include <esp_log.h>
+#include <esp_random.h>
 #include <arpa/inet.h>
 #include <cJSON.h>
+#include <cstdio>
 #include <cstring>
 
 #define TAG "Application"
 
 Application::Application() {
     event_group_ = xEventGroupCreate();
+    char boot_id[17];
+    snprintf(boot_id, sizeof(boot_id), "%08lx%08lx", static_cast<unsigned long>(esp_random()),
+             static_cast<unsigned long>(esp_random()));
+    conversation_boot_id_ = boot_id;
 
 #if CONFIG_USE_DEVICE_AEC && CONFIG_USE_SERVER_AEC
 #error "CONFIG_USE_DEVICE_AEC and CONFIG_USE_SERVER_AEC cannot be enabled at the same time"
@@ -229,7 +235,7 @@ void Application::Run() {
         if (bits & MAIN_EVENT_SEND_AUDIO) {
             while (auto packet = audio_service_.PopPacketFromSendQueue()) {
                 // 学习卡片/音乐播放期间不上报任何音频，阻止残留/后续语音触发 LLM
-                if (study_card_playing_ || media_playing_) {
+                if (study_card_playing_ || media_playing_ || conversation_.Ended()) {
                     continue;
                 }
                 if (protocol_ && !protocol_->SendAudio(std::move(packet))) {
@@ -523,7 +529,7 @@ void Application::InitializeProtocol() {
     protocol_->OnIncomingAudio([this](std::unique_ptr<AudioStreamPacket> packet) {
         // Remote TTS interrupts local media; stale non-TTS audio remains suppressed.
         if (GetDeviceState() == kDeviceStateSpeaking && !study_card_playing_ &&
-            (!media_playing_ || remote_tts_active_)) {
+            (!media_playing_ || remote_tts_active_) && !conversation_.Ended()) {
             if (remote_tts_active_ && remote_tts_audio_packets_.fetch_add(1) == 0) {
                 ESP_LOGI(TAG, "Accepting remote TTS audio packets");
             }
@@ -532,6 +538,7 @@ void Application::InitializeProtocol() {
     });
 
     protocol_->OnAudioChannelOpened([this, codec, &board]() {
+        conversation_.Begin();
         board.SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
         if (protocol_->server_sample_rate() != codec->output_sample_rate()) {
             ESP_LOGW(TAG,
@@ -544,6 +551,10 @@ void Application::InitializeProtocol() {
     protocol_->OnAudioChannelClosed([this, &board]() {
         board.SetPowerSaveLevel(PowerSaveLevel::LOW_POWER);
         Schedule([this]() {
+            // A delayed close callback must not tear down a newly opened channel.
+            if (protocol_ && protocol_->IsAudioChannelOpened())
+                return;
+            conversation_notifications_ready_ = false;
             remote_tts_active_ = false;
             if (media_paused_by_remote_tts_ && resume_media_after_remote_tts_) {
                 media_paused_by_remote_tts_ = false;
@@ -563,13 +574,18 @@ void Application::InitializeProtocol() {
             return;
         }
         if (strcmp(type->valuestring, "tts") == 0) {
+            const auto generation = conversation_.Generation();
+            if (!conversation_.Accepts(generation))
+                return;
             auto state = cJSON_GetObjectItem(root, "state");
             if (!cJSON_IsString(state)) {
                 return;
             }
             if (strcmp(state->valuestring, "start") == 0) {
                 remote_tts_active_ = true;
-                Schedule([this]() {
+                Schedule([this, generation]() {
+                    if (!conversation_.Accepts(generation))
+                        return;
                     aborted_ = false;
                     remote_tts_playback_pending_ = false;
                     remote_tts_audio_packets_ = 0;
@@ -579,7 +595,9 @@ void Application::InitializeProtocol() {
                     SetDeviceState(kDeviceStateSpeaking);
                 });
             } else if (strcmp(state->valuestring, "stop") == 0) {
-                Schedule([this]() {
+                Schedule([this, generation]() {
+                    if (!conversation_.Accepts(generation))
+                        return;
                     remote_tts_playback_pending_ = true;
                     if (GetDeviceState() == kDeviceStateSpeaking) {
                         if (listening_mode_ == kListeningModeManualStop) {
@@ -771,6 +789,7 @@ void Application::HandleToggleChatEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        conversation_.Begin();
         ListeningMode mode = GetDefaultListeningMode();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
@@ -826,6 +845,7 @@ void Application::HandleStartListeningEvent() {
     }
 
     if (state == kDeviceStateIdle) {
+        conversation_.Begin();
         if (!protocol_->IsAudioChannelOpened()) {
             SetDeviceState(kDeviceStateConnecting);
             // Schedule to let the state change be processed first (UI update)
@@ -889,6 +909,7 @@ void Application::HandleWakeWordDetectedEvent() {
 }
 
 void Application::BeginWakeWordInvoke(const std::string& wake_word) {
+    conversation_.Begin();
     // Must run in the main task with the device in idle state
     audio_service_.EncodeWakeWord();
 
@@ -971,7 +992,7 @@ void Application::HandleStateChangedEvent() {
             display->ClearChatMessages();    // Clear messages first
             display->SetEmotion("neutral");  // Then set emotion (wechat mode checks child count)
             audio_service_.EnableVoiceProcessing(false);
-            audio_service_.EnableWakeWordDetection(true);
+            audio_service_.EnableWakeWordDetection(!study_card_playing_ && !media_playing_);
             break;
         case kDeviceStateConnecting:
             display->SetStatus(Lang::Strings::CONNECTING);
@@ -1015,6 +1036,81 @@ void Application::HandleStateChangedEvent() {
             // Do nothing
             break;
     }
+    PublishConversationStatus();
+}
+
+cJSON* Application::GetConversationStatusJson() {
+    auto* status = cJSON_CreateObject();
+    cJSON_AddNumberToObject(status, "schema_version", 1);
+    cJSON_AddStringToObject(status, "boot_id", conversation_boot_id_.c_str());
+    cJSON_AddNumberToObject(status, "seq", ++conversation_status_seq_);
+    cJSON_AddStringToObject(status, "session_id", protocol_ ? protocol_->session_id().c_str() : "");
+    cJSON_AddStringToObject(status, "state", DeviceStateMachine::GetStateName(GetDeviceState()));
+    cJSON_AddBoolToObject(status, "ended", conversation_.Ended());
+    cJSON_AddBoolToObject(status, "audio_channel_open",
+                          protocol_ && protocol_->IsAudioChannelOpened());
+    cJSON_AddBoolToObject(status, "wake_word_enabled", audio_service_.IsWakeWordRunning());
+    cJSON_AddBoolToObject(status, "voice_processing", audio_service_.IsAudioProcessorRunning());
+    cJSON_AddBoolToObject(status, "media_playing", media_playing_.load());
+    cJSON_AddBoolToObject(status, "study_playing", study_card_playing_.load());
+    cJSON_AddStringToObject(status, "last_end_request_id",
+                            conversation_.LastEndRequestId().c_str());
+    return status;
+}
+
+cJSON* Application::EndConversation(const std::string& request_id, const std::string& session_id) {
+    if (request_id.empty() || request_id.size() > 128) {
+        throw std::runtime_error("Invalid conversation request_id");
+    }
+    auto result = conversation_.End(request_id, session_id,
+                                    protocol_ ? protocol_->session_id() : "", GetDeviceState());
+    if (result == ConversationLifecycle::EndResult::StaleSession) {
+        throw std::runtime_error("Conversation session has changed");
+    }
+    if (result == ConversationLifecycle::EndResult::InvalidState) {
+        throw std::runtime_error("Device cannot end a conversation in this state");
+    }
+    if (result == ConversationLifecycle::EndResult::Ended) {
+        aborted_ = true;
+        pending_listening_start_ = false;
+        play_popup_on_listening_ = false;
+        remote_tts_active_ = false;
+        remote_tts_playback_pending_ = false;
+        audio_service_.EnableVoiceProcessing(false);
+        audio_service_.ResetDecoder();
+        while (audio_service_.PopPacketFromSendQueue()) {
+        }
+        if (media_paused_by_remote_tts_ && resume_media_after_remote_tts_) {
+            media_paused_by_remote_tts_ = false;
+            resume_media_after_remote_tts_();
+        }
+        SetDeviceState(kDeviceStateIdle);
+        // Also apply when already idle: state-machine no-op emits no state event.
+        audio_service_.EnableWakeWordDetection(!study_card_playing_ && !media_playing_);
+        PublishConversationStatus();
+    }
+    auto* status = GetConversationStatusJson();
+    cJSON_AddStringToObject(status, "status", "completed");
+    cJSON_AddStringToObject(status, "request_id", request_id.c_str());
+    return status;
+}
+
+void Application::EnableConversationStatusNotifications() {
+    conversation_notifications_ready_ = true;
+    PublishConversationStatus();
+}
+
+void Application::PublishConversationStatus() {
+    if (!conversation_notifications_ready_ || !protocol_ || !protocol_->IsControlChannelOpened())
+        return;
+    auto* notification = cJSON_CreateObject();
+    cJSON_AddStringToObject(notification, "jsonrpc", "2.0");
+    cJSON_AddStringToObject(notification, "method", "notifications/ivy/conversation_status");
+    cJSON_AddItemToObject(notification, "params", GetConversationStatusJson());
+    char* text = cJSON_PrintUnformatted(notification);
+    SendMcpMessage(text);
+    cJSON_free(text);
+    cJSON_Delete(notification);
 }
 
 void Application::StartListeningAudio() {

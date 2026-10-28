@@ -95,6 +95,10 @@ MqttProtocol::~MqttProtocol() {
 
 bool MqttProtocol::Start() { return StartMqttClient(false); }
 
+bool MqttProtocol::IsControlChannelOpened() const {
+    return mqtt_ != nullptr && mqtt_->IsConnected();
+}
+
 bool MqttProtocol::StartMqttClient(bool report_error) {
     if (mqtt_ != nullptr) {
         ESP_LOGW(TAG, "Mqtt client already started");

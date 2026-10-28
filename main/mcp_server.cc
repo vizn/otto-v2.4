@@ -62,7 +62,23 @@ void McpServer::AddCommonTools() {
             codec->SetOutputVolume(properties["volume"].value<int>());
             return true;
         });
-    
+
+    AddTool("self.conversation.get_status",
+            "Query voice conversation state independently of media playback.", PropertyList(),
+            [](const PropertyList&) -> ReturnValue {
+                return Application::GetInstance().GetConversationStatusJson();
+            });
+    AddTool("self.conversation.end",
+            "End local voice interaction and return to idle. Does not stop local media. "
+            "The caller closes the voice transport after receiving completion.",
+            PropertyList({Property("request_id", kPropertyTypeString),
+                          Property("session_id", kPropertyTypeString)}),
+            [](const PropertyList& properties) -> ReturnValue {
+                return Application::GetInstance().EndConversation(
+                    properties["request_id"].value<std::string>(),
+                    properties["session_id"].value<std::string>());
+            });
+
     auto backlight = board.GetBacklight();
     if (backlight) {
         AddTool("self.screen.set_brightness",
@@ -365,7 +381,9 @@ void McpServer::ParseMessage(const cJSON* json) {
     auto method_str = std::string(method->valuestring);
     if (method_str == "notifications/initialized") {
         Application::GetInstance().Schedule([this]() {
-            if (on_initialized_) on_initialized_();
+            Application::GetInstance().EnableConversationStatusNotifications();
+            if (on_initialized_)
+                on_initialized_();
         });
         return;
     }

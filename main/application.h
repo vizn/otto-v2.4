@@ -13,11 +13,12 @@
 #include <memory>
 #include <functional>
 
-#include "protocol.h"
-#include "ota.h"
 #include "audio_service.h"
+#include "conversation_lifecycle.h"
 #include "device_state.h"
 #include "device_state_machine.h"
+#include "ota.h"
+#include "protocol.h"
 
 // Main event bits
 #define MAIN_EVENT_SCHEDULE             (1 << 0)
@@ -106,6 +107,12 @@ public:
      */
     void StopListening();
 
+    // MCP callbacks invoke these on the application task. Ending local speech
+    // preserves the transport until the caller receives the completion reply.
+    cJSON* GetConversationStatusJson();
+    cJSON* EndConversation(const std::string& request_id, const std::string& session_id);
+    void EnableConversationStatusNotifications();
+
     void Reboot();
     void WakeWordInvoke(const std::string& wake_word);
     bool UpgradeFirmware(const std::string& url, const std::string& version = "");
@@ -170,6 +177,10 @@ private:
     std::string last_error_message_;
     std::deque<std::string> recent_user_texts_;  // 最近几句 STT 文本（滑动窗口）
     AudioService audio_service_;
+    ConversationLifecycle conversation_;
+    std::string conversation_boot_id_;
+    uint32_t conversation_status_seq_ = 0;
+    std::atomic<bool> conversation_notifications_ready_ = false;
     std::unique_ptr<Ota> ota_;
 
     std::function<void(const std::string&)> mcp_broadcast_callback_;
@@ -217,7 +228,8 @@ private:
     void SetListeningMode(ListeningMode mode);
     ListeningMode GetDefaultListeningMode() const;
     void CompleteRemoteTtsPlayback();
-    
+    void PublishConversationStatus();
+
     // State change handler called by state machine
     void OnStateChanged(DeviceState old_state, DeviceState new_state);
 };
